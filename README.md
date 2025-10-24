@@ -44,5 +44,4 @@ These thresholds identify pixels with thermal characteristics consistent with fo
 - Jahani, B., et al. (2025). *Algorithm for continual monitoring of fog based on geostationary satellite imagery*. Atmospheric Measurement Techniques, 18(8), 1927–1941.
 
 
-## Repository Structure
 
