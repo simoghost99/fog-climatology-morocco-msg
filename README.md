@@ -35,20 +35,20 @@ These thresholds identify pixels with thermal characteristics consistent with fo
 FLS_Climatology/
 │
 ├── data/
-│ ├── image_sat/ # Raw NetCDF MSG infrared data
-│ ├── image_bin/ # Binary RGB / FLS mask images
-│ ├── synthese/ # Monthly/hourly summary text files (MMHH.txt)
-│ ├── plots_from_txt/ # Frequency maps (monthly, hourly)
-│ └── maroc shape file/ # GeoJSON shapefile of Morocco
+│   ├── image_sat/                # Raw NetCDF MSG infrared data
+│   ├── image_bin/                # Binary RGB / FLS mask images
+│   ├── synthese/                 # Monthly/hourly summary text files (MMHH.txt)
+│   ├── plots_from_txt/           # Frequency maps (monthly, hourly)
+│   └── maroc shape file/         # GeoJSON shapefile of Morocco
 │
 ├── scripts/
-│ ├── extract_FLS_maroc.py # Core FLS detection and domain masking
-│ ├── synthese_FLS.py # Builds MMHH.txt frequency tables
-│ ├── plot_frequency_maps.py # Generates frequency climatology maps
-│ └── utils/ # Helper functions
+│   ├── extract_FLS_maroc.py      # Core FLS detection + Morocco mask
+│   ├── synthese_FLS.py           # Builds MMHH.txt frequency tables
+│   ├── plot_frequency_maps.py    # Generates frequency climatology maps
+│   └── utils/                    # Helper functions
 │
 ├── README.md
-└── requirements.txt 
+└── requirements.txt$$
 
 
 
