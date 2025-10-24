@@ -30,7 +30,8 @@ $$
 
 These thresholds identify pixels with thermal characteristics consistent with fog or low stratus layers during nighttime conditions.
 
----
+## Repository Structure
+
 FLS_Climatology/
 │
 ├── data/
@@ -48,7 +49,9 @@ FLS_Climatology/
 │
 ├── README.md
 └── requirements.txt
----
+
+
+
 
 ## References
 - Cermak, J., & Bendix, J. (2008). *A novel approach to fog/low stratus detection using Meteosat 8 data*. Atmospheric Research, 87(3–4), 279–292.  
