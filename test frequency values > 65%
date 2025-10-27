@@ -1,0 +1,140 @@
+import os
+import pandas as pd
+import numpy as np
+
+# === Directory ===
+input_dir = "C:/Users/moham/OneDrive/Documents/fog/synthese/synthese"
+
+# === Function to check values > 0.65 in a file ===
+def check_high_values(file_path, threshold=0.65):
+    df = pd.read_csv(file_path, sep="\t")
+    if df.empty:
+        return 0, []
+    
+    high_values = df[df["Frequence"] > threshold]
+    count = len(high_values)
+    
+    high_value_details = []
+    for _, row in high_values.iterrows():
+        high_value_details.append({
+            'file': os.path.basename(file_path),
+            'longitude': row["Longitude"],
+            'latitude': row["Latitude"],
+            'frequence': row["Frequence"],
+            'percentage': row["Frequence"] * 100
+        })
+    
+    return count, high_value_details
+
+# === Analyze all files ===
+file_list = [f for f in os.listdir(input_dir) if f.endswith(".txt")]
+total_high_values = 0
+all_high_value_records = []
+
+print("=== SEARCHING FOR VALUES > 0.65 (65%) ===")
+print(f"Analyzing {len(file_list)} files...\n")
+
+for file in file_list:
+    path = os.path.join(input_dir, file)
+    count, details = check_high_values(path)
+    
+    if count > 0:
+        print(f" {file}: {count} value(s) > 0.65")
+        total_high_values += count
+        all_high_value_records.extend(details)
+
+# === Summary ===
+print("\n" + "="*50)
+print(" FINAL SUMMARY")
+print("="*50)
+print(f"Total files analyzed: {len(file_list)}")
+print(f"Total values > 0.65: {total_high_values}")
+
+if total_high_values > 0:
+    print(f"\n DETAILS OF HIGH VALUES:")
+    print("-" * 80)
+    print(f"{'File':<15} {'Longitude':<12} {'Latitude':<12} {'Frequency':<12} {'Percentage':<12}")
+    print("-" * 80)
+    
+    for record in all_high_value_records:
+        print(f"{record['file']:<15} {record['longitude']:<12.2f} {record['latitude']:<12.2f} {record['frequence']:<12.3f} {record['percentage']:<12.1f}%")
+    
+    # Additional statistics
+    frequencies = [record['frequence'] for record in all_high_value_records]
+    max_freq = max(frequencies) if frequencies else 0
+    min_freq_high = min(frequencies) if frequencies else 0
+    avg_freq_high = np.mean(frequencies) if frequencies else 0
+    
+    print("\n HIGH VALUES STATISTICS:")
+    print(f"Maximum value found: {max_freq:.3f} ({max_freq*100:.1f}%)")
+    print(f"Minimum value > 0.65: {min_freq_high:.3f} ({min_freq_high*100:.1f}%)")
+    print(f"Average of values > 0.65: {avg_freq_high:.3f} ({avg_freq_high*100:.1f}%)")
+    
+    # Files with the most high values
+    file_counts = {}
+    for record in all_high_value_records:
+        file_name = record['file']
+        file_counts[file_name] = file_counts.get(file_name, 0) + 1
+    
+    print(f"\n FILES WITH THE MOST VALUES > 0.65:")
+    for file_name, count in sorted(file_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"  {file_name}: {count} value(s)")
+        
+else:
+    print(" No values greater than 0.65 were found in the files.")
+
+# === Additional check: general distribution ===
+print(f"\n GENERAL DISTRIBUTION ANALYSIS:")
+all_frequencies = []
+
+for file in file_list:
+    path = os.path.join(input_dir, file)
+    df = pd.read_csv(path, sep="\t")
+    if not df.empty:
+        all_frequencies.extend(df["Frequence"].values)
+
+if all_frequencies:
+    all_frequencies = np.array(all_frequencies)
+    print(f"Total data points: {len(all_frequencies)}")
+    print(f"Global average frequency: {np.mean(all_frequencies):.3f} ({np.mean(all_frequencies)*100:.1f}%)")
+    print(f"Global maximum frequency: {np.max(all_frequencies):.3f} ({np.max(all_frequencies)*100:.1f}%)")
+    print(f"Global minimum frequency: {np.min(all_frequencies):.3f} ({np.min(all_frequencies)*100:.1f}%)")
+    
+    # Distribution by ranges
+    bins = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.65, 0.7, 0.8, 0.9, 1.0]
+    hist, bin_edges = np.histogram(all_frequencies, bins=bins)
+    
+    print(f"\n DISTRIBUTION BY RANGES:")
+    for i in range(len(hist)):
+        lower = bin_edges[i]
+        upper = bin_edges[i+1]
+        count = hist[i]
+        percentage = (count / len(all_frequencies)) * 100
+        range_label = f"{lower:.1f}-{upper:.1f}"
+        if lower == 0.65:
+            range_label = f"{lower:.2f}-{upper:.1f}*"
+        print(f"  {range_label:<8}: {count:>6} points ({percentage:>5.1f}%)")
+
+# === Check for any values above 1.0 (shouldn't exist for frequencies) ===
+print(f"\n CHECKING FOR INVALID VALUES (> 1.0):")
+invalid_values = []
+for file in file_list:
+    path = os.path.join(input_dir, file)
+    df = pd.read_csv(path, sep="\t")
+    if not df.empty:
+        invalid = df[df["Frequence"] > 1.0]
+        if len(invalid) > 0:
+            for _, row in invalid.iterrows():
+                invalid_values.append({
+                    'file': file,
+                    'longitude': row["Longitude"],
+                    'latitude': row["Latitude"],
+                    'frequence': row["Frequence"]
+                })
+
+if invalid_values:
+    print(f"  WARNING: {len(invalid_values)} invalid value(s) > 1.0 found!")
+    for inv in invalid_values:
+        print(f"  {inv['file']}: ({inv['longitude']:.2f}, {inv['latitude']:.2f}) = {inv['frequence']:.3f}")
+else:
+    print(" No invalid values > 1.0 found.")
