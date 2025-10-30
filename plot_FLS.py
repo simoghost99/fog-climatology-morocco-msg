@@ -100,24 +100,15 @@ def plot_frequency_map(lon_grid, lat_grid, freq_grid, title, output_name):
     print(f"Map saved: {output_name}")
 
 
-# === Function: plot enhanced frequency map with statistics ===
+# === Function: plot enhanced frequency map without statistics ===
 def plot_enhanced_frequency_map(lon_grid, lat_grid, freq_grid, title, output_name):
-    """Enhanced version with statistics and better styling"""
+    """Enhanced version without statistics box"""
     
     fig = plt.figure(figsize=(14, 10))
     ax = plt.axes(projection=ccrs.PlateCarree())
     
     # Convert frequency values to percentage
     freq_percentage = freq_grid * 100
-    
-    # Calculate statistics
-    valid_data = freq_percentage[~np.isnan(freq_percentage)]
-    if len(valid_data) > 0:
-        avg_freq = np.mean(valid_data)
-        max_freq = np.max(valid_data)
-        min_freq = np.min(valid_data)
-    else:
-        avg_freq = max_freq = min_freq = 0
     
     # Plot with custom color scale - CHANGED TO 25%
     im = ax.pcolormesh(lon_grid, lat_grid, freq_percentage,
@@ -152,16 +143,7 @@ def plot_enhanced_frequency_map(lon_grid, lat_grid, freq_grid, title, output_nam
     ax.set_ylabel("Latitude", fontsize=12, fontweight='bold')
     ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
 
-    # Statistics box
-    stats_text = f"Statistics:\n"
-    stats_text += f"Avg: {avg_freq:.1f}%\n"
-    stats_text += f"Max: {max_freq:.1f}%\n"
-    stats_text += f"Min: {min_freq:.1f}%\n"
-    stats_text += f"Points: {len(valid_data)}"
-    
-    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=10,
-           bbox=dict(boxstyle="round,pad=0.5", facecolor='white', alpha=0.9),
-           verticalalignment='top')
+    # REMOVED: Statistics box
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, output_name), dpi=300, bbox_inches="tight")
@@ -242,6 +224,6 @@ print("• Black coastline")
 print("• Extended map extent (Longitude: -20 to -1, Latitude: 20 to 36)")
 print("• Ocean background")
 print("• Clean design without frequency range legend")
-print("• Statistics box (enhanced version)")
+print("• No statistics box (removed)")
 print("• Professional gridlines")
 print("="*70)
