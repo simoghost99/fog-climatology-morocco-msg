@@ -1,0 +1,308 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import geopandas as gpd
+import os
+import pandas as pd
+
+# Define output directory
+output_dir = "output_maps"
+os.makedirs(output_dir, exist_ok=True)
+
+# Define custom colormap
+colors = [
+    (0.0,  'black'),
+    (0.05, 'midnightblue'),
+    (0.15, 'blue'),
+    (0.30, 'lightskyblue'),
+    (0.45, 'lemonchiffon'),
+    (0.60, 'orange'),
+    (0.80, 'red'),
+    (1.0,  'darkred')
+]
+cmap_custom = LinearSegmentedColormap.from_list("black_blue_yellow_red", [c[1] for c in colors], N=256)
+
+def filter_night_data(df):
+    """
+    Filter data to keep only night conditions (hc = 6h-18h)
+    """
+    night_data = df[df['condition_type'] == 'hc'].copy()
+    print(f"Night data (6h-18h): {len(night_data)} records")
+    print(f"Day data (18h-6h): {len(df[df['condition_type'] == 'cf'])} records")
+    return night_data
+
+def create_night_fls_frequency_map(df):
+    """Create a map showing NIGHT FLS frequency (6h-18h) at each station"""
+    
+    # Filter for night data only
+    night_data = filter_night_data(df)
+    
+    # Load Morocco borders
+    try:
+        morocco_borders = gpd.read_file('Morocco_ADM0_simplified.simplified.geojson')
+    except Exception as e:
+        print(f"Could not load Morocco borders: {e}")
+        morocco_borders = None
+    
+    # Create figure and axis with cartopy projection
+    fig = plt.figure(figsize=(16, 12))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    
+    # Get station data for night only
+    station_summary = night_data.groupby('station').agg({
+        'fls_frequency': 'mean',
+        'latitude': 'first',
+        'longitude': 'first'
+    }).reset_index()
+    
+    # Normalize frequencies to 0-25% range for color mapping
+    max_display_freq = 25.0
+    
+    # Create scatter plot with color based on FLS frequency (capped at 25%)
+    sc = ax.scatter(station_summary['longitude'], 
+                   station_summary['latitude'], 
+                   c=np.minimum(station_summary['fls_frequency'], max_display_freq),
+                   cmap=cmap_custom, 
+                   s=200, 
+                   edgecolor='black', 
+                   linewidth=1.5,
+                   vmin=0, vmax=max_display_freq,
+                   transform=ccrs.PlateCarree(),
+                   zorder=5)
+    
+    # Add station labels
+    for _, row in station_summary.iterrows():
+        ax.annotate(f"{row['station']}\n({row['fls_frequency']:.1f}%)", 
+                   (row['longitude'], row['latitude']),
+                   xytext=(5, 5), 
+                   textcoords='offset points',
+                   fontsize=9,
+                   fontweight='bold',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor='gray'),
+                   transform=ccrs.PlateCarree(),
+                   zorder=6)
+    
+    # Add coastline in BLACK (changed from darkblue)
+    ax.add_feature(cfeature.COASTLINE, linewidth=1.2, edgecolor='black')
+    
+    # Add ocean
+    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+    
+    # Add Morocco shapefile only
+    if morocco_borders is not None:
+        morocco_borders.plot(ax=ax, color='none', edgecolor='black', linewidth=1.2, transform=ccrs.PlateCarree())
+    
+    # Add colorbar
+    cbar = plt.colorbar(sc, ax=ax, orientation="vertical", label="FLS Frequency (%)", shrink=0.8)
+    cbar_ticks = np.arange(0, 26, 5)
+    cbar.set_ticks(cbar_ticks)
+    cbar.set_ticklabels([f"{t:.0f}%" for t in cbar_ticks])
+    
+    # Set map limits for Morocco
+    ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+    
+    # Add gridlines
+    gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.3)
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    # Add title
+    ax.set_title('Fog and Low Stratus (FLS) Frequency Distribution - NIGHT (6h-18h)\nMorocco Meteorological Stations 2024', 
+                fontsize=14, fontweight='bold', pad=20)
+    
+    # REMOVED: Legend for frequency ranges
+    
+    # Add note about capped values and night data
+    high_freq_stations = station_summary[station_summary['fls_frequency'] > max_display_freq]
+    note_text = "Data: Night period only (6h-18h)\n"
+    if len(high_freq_stations) > 0:
+        note_text += f"Note: Stations above {max_display_freq}% shown at maximum color intensity\n"
+        note_text += "High frequency stations: " + ", ".join(high_freq_stations['station'].tolist())
+    
+    ax.text(0.02, 0.02, note_text, transform=ax.transAxes, fontsize=9,
+           bbox=dict(boxstyle="round,pad=0.5", facecolor='lightblue', alpha=0.7))
+    
+    plt.tight_layout()
+    return fig, ax, station_summary
+
+def create_day_fls_frequency_map(df):
+    """Create a map showing DAY FLS frequency (18h-6h) at each station"""
+    
+    # Filter for day data only
+    day_data = df[df['condition_type'] == 'cf'].copy()
+    
+    # Load Morocco borders
+    try:
+        morocco_borders = gpd.read_file('Morocco_ADM0_simplified.simplified.geojson')
+    except Exception as e:
+        print(f"Could not load Morocco borders: {e}")
+        morocco_borders = None
+    
+    # Create figure and axis with cartopy projection
+    fig = plt.figure(figsize=(16, 12))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    
+    # Get station data for day only
+    station_summary = day_data.groupby('station').agg({
+        'fls_frequency': 'mean',
+        'latitude': 'first',
+        'longitude': 'first'
+    }).reset_index()
+    
+    # Normalize frequencies to 0-25% range for color mapping
+    max_display_freq = 25.0
+    
+    # Create scatter plot with color based on FLS frequency (capped at 25%)
+    sc = ax.scatter(station_summary['longitude'], 
+                   station_summary['latitude'], 
+                   c=np.minimum(station_summary['fls_frequency'], max_display_freq),
+                   cmap=cmap_custom, 
+                   s=200, 
+                   edgecolor='black', 
+                   linewidth=1.5,
+                   vmin=0, vmax=max_display_freq,
+                   transform=ccrs.PlateCarree(),
+                   zorder=5)
+    
+    # Add station labels
+    for _, row in station_summary.iterrows():
+        ax.annotate(f"{row['station']}\n({row['fls_frequency']:.1f}%)", 
+                   (row['longitude'], row['latitude']),
+                   xytext=(5, 5), 
+                   textcoords='offset points',
+                   fontsize=9,
+                   fontweight='bold',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor='gray'),
+                   transform=ccrs.PlateCarree(),
+                   zorder=6)
+    
+    # Add coastline in BLACK
+    ax.add_feature(cfeature.COASTLINE, linewidth=1.2, edgecolor='black')
+    
+    # Add ocean
+    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+    
+    # Add Morocco shapefile only
+    if morocco_borders is not None:
+        morocco_borders.plot(ax=ax, color='none', edgecolor='black', linewidth=1.2, transform=ccrs.PlateCarree())
+    
+    # Add colorbar
+    cbar = plt.colorbar(sc, ax=ax, orientation="vertical", label="FLS Frequency (%)", shrink=0.8)
+    cbar_ticks = np.arange(0, 26, 5)
+    cbar.set_ticks(cbar_ticks)
+    cbar.set_ticklabels([f"{t:.0f}%" for t in cbar_ticks])
+    
+    # Set map limits for Morocco
+    ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+    
+    # Add gridlines
+    gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.3)
+    gl.top_labels = False
+    gl.right_labels = False
+    
+    # Add title
+    ax.set_title('Fog and Low Stratus (FLS) Frequency Distribution - DAY (18h-6h)\nMorocco Meteorological Stations 2024', 
+                fontsize=14, fontweight='bold', pad=20)
+    
+    # REMOVED: Legend for frequency ranges
+    
+    # Add note about capped values and day data
+    high_freq_stations = station_summary[station_summary['fls_frequency'] > max_display_freq]
+    note_text = "Data: Day period only (18h-6h)\n"
+    if len(high_freq_stations) > 0:
+        note_text += f"Note: Stations above {max_display_freq}% shown at maximum color intensity\n"
+        note_text += "High frequency stations: " + ", ".join(high_freq_stations['station'].tolist())
+    
+    ax.text(0.02, 0.02, note_text, transform=ax.transAxes, fontsize=9,
+           bbox=dict(boxstyle="round,pad=0.5", facecolor='lightyellow', alpha=0.7))
+    
+    plt.tight_layout()
+    return fig, ax, station_summary
+
+def compare_day_night_fls(df):
+    """Compare day vs night FLS frequencies"""
+    
+    # Separate day and night data
+    day_data = df[df['condition_type'] == 'cf']
+    night_data = df[df['condition_type'] == 'hc']
+    
+    # Calculate statistics
+    day_summary = day_data.groupby('station').agg({
+        'fls_frequency': 'mean',
+        'fls_hours': 'sum'
+    }).add_prefix('day_')
+    
+    night_summary = night_data.groupby('station').agg({
+        'fls_frequency': 'mean', 
+        'fls_hours': 'sum'
+    }).add_prefix('night_')
+    
+    # Combine
+    comparison = pd.concat([day_summary, night_summary], axis=1)
+    comparison['difference'] = comparison['night_fls_frequency'] - comparison['day_fls_frequency']
+    
+    return comparison.sort_values('night_fls_frequency', ascending=False)
+
+# Create both night and day maps
+print("Creating FLS frequency maps...")
+
+# Night map (6h-18h)
+print("\n1. Creating NIGHT FLS frequency map (6h-18h)...")
+fig_night, ax_night, night_station_summary = create_night_fls_frequency_map(complete_data)
+plt.savefig(os.path.join(output_dir, "fls_night_map_2024_black_coast.png"), dpi=300, bbox_inches="tight")
+plt.show()
+
+# Day map (18h-6h)
+print("\n2. Creating DAY FLS frequency map (18h-6h)...")
+fig_day, ax_day, day_station_summary = create_day_fls_frequency_map(complete_data)
+plt.savefig(os.path.join(output_dir, "fls_day_map_2024_black_coast.png"), dpi=300, bbox_inches="tight")
+plt.show()
+
+# Compare day vs night
+print("\n" + "="*60)
+print("DAY vs NIGHT FLS FREQUENCY COMPARISON")
+print("="*60)
+
+comparison = compare_day_night_fls(complete_data)
+print(comparison.round(2))
+
+# Print night-specific information
+print("\n" + "="*50)
+print("NIGHT FLS FREQUENCY (6h-18h) - 2024")
+print("="*50)
+
+print(f"{'Station':<15} {'Night Frequency':<15} {'Day Frequency':<15} {'Difference':<12}")
+print("-" * 60)
+for station in night_station_summary.sort_values('fls_frequency', ascending=False).itertuples():
+    day_freq = comparison.loc[station.station, 'day_fls_frequency']
+    night_freq = station.fls_frequency
+    diff = night_freq - day_freq
+    
+    print(f"{station.station:<15} {night_freq:<14.1f}% {day_freq:<14.1f}% {diff:>+10.1f}%")
+
+# Generate night-specific statistics
+total_night_hours = complete_data[complete_data['condition_type'] == 'hc']['fls_hours'].sum()
+total_day_hours = complete_data[complete_data['condition_type'] == 'cf']['fls_hours'].sum()
+avg_night_freq = complete_data[complete_data['condition_type'] == 'hc']['fls_frequency'].mean()
+avg_day_freq = complete_data[complete_data['condition_type'] == 'cf']['fls_frequency'].mean()
+
+print(f"\nSUMMARY STATISTICS:")
+print(f"Average night FLS frequency (6h-18h): {avg_night_freq:.1f}%")
+print(f"Average day FLS frequency (18h-6h): {avg_day_freq:.1f}%")
+print(f"Total night FLS hours: {total_night_hours:,}")
+print(f"Total day FLS hours: {total_day_hours:,}")
+print(f"Night/Day ratio: {total_night_hours/total_day_hours:.2f}")
+
+# Find stations with highest night FLS
+highest_night = night_station_summary.loc[night_station_summary['fls_frequency'].idxmax()]
+lowest_night = night_station_summary.loc[night_station_summary['fls_frequency'].idxmin()]
+
+print(f"\nNIGHT FLS EXTREMES:")
+print(f"Highest night FLS: {highest_night['station']} ({highest_night['fls_frequency']:.1f}%)")
+print(f"Lowest night FLS: {lowest_night['station']} ({lowest_night['fls_frequency']:.1f}%)")
+
+print(f"\nAll maps saved to: {output_dir}/")
+print(f"Map extent: Longitude [-20, -1], Latitude [20, 36]")
+print(f"Coastline color: BLACK (updated from blue)")
