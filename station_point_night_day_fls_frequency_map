@@ -6,10 +6,18 @@ import cartopy.feature as cfeature
 import geopandas as gpd
 import os
 import pandas as pd
+from datetime import datetime
 
-# Define output directory
-output_dir = "output_maps"
-os.makedirs(output_dir, exist_ok=True)
+# Define output directories for all 4 combinations
+output_dirs = {
+    'jour_cf': "output_maps_2024_jour_cf",
+    'jour_hc': "output_maps_2024_jour_hc", 
+    'nuit_cf': "output_maps_2024_nuit_cf",
+    'nuit_hc': "output_maps_2024_nuit_hc"
+}
+
+for dir_name in output_dirs.values():
+    os.makedirs(dir_name, exist_ok=True)
 
 # Define custom colormap
 colors = [
@@ -24,20 +32,8 @@ colors = [
 ]
 cmap_custom = LinearSegmentedColormap.from_list("black_blue_yellow_red", [c[1] for c in colors], N=256)
 
-def filter_night_data(df):
-    """
-    Filter data to keep only night conditions (hc = 6h-18h)
-    """
-    night_data = df[df['condition_type'] == 'hc'].copy()
-    print(f"Night data (6h-18h): {len(night_data)} records")
-    print(f"Day data (18h-6h): {len(df[df['condition_type'] == 'cf'])} records")
-    return night_data
-
-def create_night_fls_frequency_map(df):
-    """Create a map showing NIGHT FLS frequency (6h-18h) at each station"""
-    
-    # Filter for night data only
-    night_data = filter_night_data(df)
+def create_fls_frequency_map(df, title, output_name, output_dir, max_display_freq=25.0, data_type=""):
+    """Create a map showing FLS frequency at each station"""
     
     # Load Morocco borders
     try:
@@ -50,111 +46,14 @@ def create_night_fls_frequency_map(df):
     fig = plt.figure(figsize=(16, 12))
     ax = plt.axes(projection=ccrs.PlateCarree())
     
-    # Get station data for night only
-    station_summary = night_data.groupby('station').agg({
+    # Get station data
+    station_summary = df.groupby('station').agg({
         'fls_frequency': 'mean',
         'latitude': 'first',
         'longitude': 'first'
     }).reset_index()
     
-    # Normalize frequencies to 0-25% range for color mapping
-    max_display_freq = 25.0
-    
-    # Create scatter plot with color based on FLS frequency (capped at 25%)
-    sc = ax.scatter(station_summary['longitude'], 
-                   station_summary['latitude'], 
-                   c=np.minimum(station_summary['fls_frequency'], max_display_freq),
-                   cmap=cmap_custom, 
-                   s=200, 
-                   edgecolor='black', 
-                   linewidth=1.5,
-                   vmin=0, vmax=max_display_freq,
-                   transform=ccrs.PlateCarree(),
-                   zorder=5)
-    
-    # Add station labels
-    for _, row in station_summary.iterrows():
-        ax.annotate(f"{row['station']}\n({row['fls_frequency']:.1f}%)", 
-                   (row['longitude'], row['latitude']),
-                   xytext=(5, 5), 
-                   textcoords='offset points',
-                   fontsize=9,
-                   fontweight='bold',
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8, edgecolor='gray'),
-                   transform=ccrs.PlateCarree(),
-                   zorder=6)
-    
-    # Add coastline in BLACK (changed from darkblue)
-    ax.add_feature(cfeature.COASTLINE, linewidth=1.2, edgecolor='black')
-    
-    # Add ocean
-    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-    
-    # Add Morocco shapefile only
-    if morocco_borders is not None:
-        morocco_borders.plot(ax=ax, color='none', edgecolor='black', linewidth=1.2, transform=ccrs.PlateCarree())
-    
-    # Add colorbar
-    cbar = plt.colorbar(sc, ax=ax, orientation="vertical", label="FLS Frequency (%)", shrink=0.8)
-    cbar_ticks = np.arange(0, 26, 5)
-    cbar.set_ticks(cbar_ticks)
-    cbar.set_ticklabels([f"{t:.0f}%" for t in cbar_ticks])
-    
-    # Set map limits for Morocco
-    ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
-    
-    # Add gridlines
-    gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.3)
-    gl.top_labels = False
-    gl.right_labels = False
-    
-    # Add title
-    ax.set_title('Fog and Low Stratus (FLS) Frequency Distribution - NIGHT (6h-18h)\nMorocco Meteorological Stations 2024', 
-                fontsize=14, fontweight='bold', pad=20)
-    
-    # REMOVED: Legend for frequency ranges
-    
-    # Add note about capped values and night data
-    high_freq_stations = station_summary[station_summary['fls_frequency'] > max_display_freq]
-    note_text = "Data: Night period only (6h-18h)\n"
-    if len(high_freq_stations) > 0:
-        note_text += f"Note: Stations above {max_display_freq}% shown at maximum color intensity\n"
-        note_text += "High frequency stations: " + ", ".join(high_freq_stations['station'].tolist())
-    
-    ax.text(0.02, 0.02, note_text, transform=ax.transAxes, fontsize=9,
-           bbox=dict(boxstyle="round,pad=0.5", facecolor='lightblue', alpha=0.7))
-    
-    plt.tight_layout()
-    return fig, ax, station_summary
-
-def create_day_fls_frequency_map(df):
-    """Create a map showing DAY FLS frequency (18h-6h) at each station"""
-    
-    # Filter for day data only
-    day_data = df[df['condition_type'] == 'cf'].copy()
-    
-    # Load Morocco borders
-    try:
-        morocco_borders = gpd.read_file('Morocco_ADM0_simplified.simplified.geojson')
-    except Exception as e:
-        print(f"Could not load Morocco borders: {e}")
-        morocco_borders = None
-    
-    # Create figure and axis with cartopy projection
-    fig = plt.figure(figsize=(16, 12))
-    ax = plt.axes(projection=ccrs.PlateCarree())
-    
-    # Get station data for day only
-    station_summary = day_data.groupby('station').agg({
-        'fls_frequency': 'mean',
-        'latitude': 'first',
-        'longitude': 'first'
-    }).reset_index()
-    
-    # Normalize frequencies to 0-25% range for color mapping
-    max_display_freq = 25.0
-    
-    # Create scatter plot with color based on FLS frequency (capped at 25%)
+    # Create scatter plot with color based on FLS frequency (capped at max_display_freq)
     sc = ax.scatter(station_summary['longitude'], 
                    station_summary['latitude'], 
                    c=np.minimum(station_summary['fls_frequency'], max_display_freq),
@@ -190,7 +89,7 @@ def create_day_fls_frequency_map(df):
     
     # Add colorbar
     cbar = plt.colorbar(sc, ax=ax, orientation="vertical", label="FLS Frequency (%)", shrink=0.8)
-    cbar_ticks = np.arange(0, 26, 5)
+    cbar_ticks = np.arange(0, max_display_freq + 1, 5)
     cbar.set_ticks(cbar_ticks)
     cbar.set_ticklabels([f"{t:.0f}%" for t in cbar_ticks])
     
@@ -203,106 +102,233 @@ def create_day_fls_frequency_map(df):
     gl.right_labels = False
     
     # Add title
-    ax.set_title('Fog and Low Stratus (FLS) Frequency Distribution - DAY (18h-6h)\nMorocco Meteorological Stations 2024', 
-                fontsize=14, fontweight='bold', pad=20)
+    ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
     
-    # REMOVED: Legend for frequency ranges
-    
-    # Add note about capped values and day data
+    # Add note about data type
     high_freq_stations = station_summary[station_summary['fls_frequency'] > max_display_freq]
-    note_text = "Data: Day period only (18h-6h)\n"
+    note_text = f"Data: {data_type}\n"
     if len(high_freq_stations) > 0:
         note_text += f"Note: Stations above {max_display_freq}% shown at maximum color intensity\n"
         note_text += "High frequency stations: " + ", ".join(high_freq_stations['station'].tolist())
     
     ax.text(0.02, 0.02, note_text, transform=ax.transAxes, fontsize=9,
-           bbox=dict(boxstyle="round,pad=0.5", facecolor='lightyellow', alpha=0.7))
+           bbox=dict(boxstyle="round,pad=0.5", facecolor='lightblue', alpha=0.7))
     
     plt.tight_layout()
-    return fig, ax, station_summary
-
-def compare_day_night_fls(df):
-    """Compare day vs night FLS frequencies"""
+    plt.savefig(os.path.join(output_dir, output_name), dpi=300, bbox_inches="tight")
+    plt.close()
     
-    # Separate day and night data
-    day_data = df[df['condition_type'] == 'cf']
-    night_data = df[df['condition_type'] == 'hc']
+    print(f"Map saved: {output_name}")
+    return station_summary
+
+def get_season(month):
+    """Get season for a given month"""
+    if month in [12, 1, 2]:
+        return 'Winter'
+    elif month in [3, 4, 5]:
+        return 'Spring'
+    elif month in [6, 7, 8]:
+        return 'Summer'
+    else:
+        return 'Autumn'
+
+def get_data_combination(complete_data, period, condition):
+    """Get data for specific period and condition combination"""
+    if period == 'jour' and condition == 'cf':
+        return complete_data[(complete_data['condition_type'] == 'cf')].copy()
+    elif period == 'jour' and condition == 'hc':
+        return complete_data[(complete_data['condition_type'] == 'hc')].copy()
+    elif period == 'nuit' and condition == 'cf':
+        return complete_data[(complete_data['condition_type'] == 'cf')].copy()
+    elif period == 'nuit' and condition == 'hc':
+        return complete_data[(complete_data['condition_type'] == 'hc')].copy()
+
+def get_data_description(period, condition):
+    """Get description for data combination"""
+    descriptions = {
+        'jour_cf': "Jour (18h-6h) - Conditions faibles (cf)",
+        'jour_hc': "Jour (18h-6h) - Conditions élevées (hc)", 
+        'nuit_cf': "Nuit (6h-18h) - Conditions faibles (cf)",
+        'nuit_hc': "Nuit (6h-18h) - Conditions élevées (hc)"
+    }
+    return descriptions.get(f"{period}_{condition}", "")
+
+def create_all_combinations_maps(complete_data):
+    """Create maps for all 4 combinations: jour_cf, jour_hc, nuit_cf, nuit_hc"""
     
-    # Calculate statistics
-    day_summary = day_data.groupby('station').agg({
-        'fls_frequency': 'mean',
-        'fls_hours': 'sum'
-    }).add_prefix('day_')
+    print("=" * 80)
+    print("CREATING MAPS FOR ALL 4 COMBINATIONS")
+    print("=" * 80)
     
-    night_summary = night_data.groupby('station').agg({
-        'fls_frequency': 'mean', 
-        'fls_hours': 'sum'
-    }).add_prefix('night_')
+    # Define seasons with correct months for 2024
+    seasons = {
+        'Winter': [12, 1, 2],    # Décembre 2024, Janvier 2024, Février 2024
+        'Spring': [3, 4, 5],     # Mars, Avril, Mai 2024
+        'Summer': [6, 7, 8],     # Juin, Juillet, Août 2024
+        'Autumn': [9, 10, 11]    # Septembre, Octobre, Novembre 2024
+    }
     
-    # Combine
-    comparison = pd.concat([day_summary, night_summary], axis=1)
-    comparison['difference'] = comparison['night_fls_frequency'] - comparison['day_fls_frequency']
+    results = {}
     
-    return comparison.sort_values('night_fls_frequency', ascending=False)
-
-# Create both night and day maps
-print("Creating FLS frequency maps...")
-
-# Night map (6h-18h)
-print("\n1. Creating NIGHT FLS frequency map (6h-18h)...")
-fig_night, ax_night, night_station_summary = create_night_fls_frequency_map(complete_data)
-plt.savefig(os.path.join(output_dir, "fls_night_map_2024_black_coast.png"), dpi=300, bbox_inches="tight")
-plt.show()
-
-# Day map (18h-6h)
-print("\n2. Creating DAY FLS frequency map (18h-6h)...")
-fig_day, ax_day, day_station_summary = create_day_fls_frequency_map(complete_data)
-plt.savefig(os.path.join(output_dir, "fls_day_map_2024_black_coast.png"), dpi=300, bbox_inches="tight")
-plt.show()
-
-# Compare day vs night
-print("\n" + "="*60)
-print("DAY vs NIGHT FLS FREQUENCY COMPARISON")
-print("="*60)
-
-comparison = compare_day_night_fls(complete_data)
-print(comparison.round(2))
-
-# Print night-specific information
-print("\n" + "="*50)
-print("NIGHT FLS FREQUENCY (6h-18h) - 2024")
-print("="*50)
-
-print(f"{'Station':<15} {'Night Frequency':<15} {'Day Frequency':<15} {'Difference':<12}")
-print("-" * 60)
-for station in night_station_summary.sort_values('fls_frequency', ascending=False).itertuples():
-    day_freq = comparison.loc[station.station, 'day_fls_frequency']
-    night_freq = station.fls_frequency
-    diff = night_freq - day_freq
+    # Process all 4 combinations
+    combinations = [
+        ('jour', 'cf'),
+        ('jour', 'hc'), 
+        ('nuit', 'cf'),
+        ('nuit', 'hc')
+    ]
     
-    print(f"{station.station:<15} {night_freq:<14.1f}% {day_freq:<14.1f}% {diff:>+10.1f}%")
+    for period, condition in combinations:
+        combo_name = f"{period}_{condition}"
+        print(f"\n{'='*50}")
+        print(f"PROCESSING: {combo_name.upper()}")
+        print(f"{'='*50}")
+        
+        # Get data for this combination
+        combo_data = get_data_combination(complete_data, period, condition)
+        data_description = get_data_description(period, condition)
+        
+        print(f"Records: {len(combo_data)}")
+        print(f"Description: {data_description}")
+        print(f"Average FLS frequency: {combo_data['fls_frequency'].mean():.1f}%")
+        
+        output_dir = output_dirs[combo_name]
+        
+        # Annual map
+        title_annual = f'FLS Frequency - Annual 2024 ({data_description})'
+        output_annual = f"fls_annual_{combo_name}_2024.png"
+        results[f'{combo_name}_annual'] = create_fls_frequency_map(
+            combo_data, title_annual, output_annual, output_dir, 
+            data_type=data_description
+        )
+        
+        # Monthly maps
+        months = sorted(combo_data['month'].unique())
+        for month in months:
+            month_name = datetime(2024, month, 1).strftime('%B')
+            month_data = combo_data[combo_data['month'] == month]
+            
+            if len(month_data) > 0:
+                title_month = f'FLS Frequency - {month_name} 2024 ({data_description})'
+                output_month = f"fls_{month_name.lower()}_{combo_name}_2024.png"
+                create_fls_frequency_map(
+                    month_data, title_month, output_month, output_dir,
+                    data_type=data_description
+                )
+        
+        # Seasonal maps
+        for season_name, season_months in seasons.items():
+            season_data = combo_data[combo_data['month'].isin(season_months)]
+            
+            if len(season_data) > 0:
+                title_season = f'FLS Frequency - {season_name} 2024 ({data_description})'
+                output_season = f"fls_{season_name.lower()}_{combo_name}_2024.png"
+                create_fls_frequency_map(
+                    season_data, title_season, output_season, output_dir,
+                    data_type=data_description
+                )
+    
+    return results
 
-# Generate night-specific statistics
-total_night_hours = complete_data[complete_data['condition_type'] == 'hc']['fls_hours'].sum()
-total_day_hours = complete_data[complete_data['condition_type'] == 'cf']['fls_hours'].sum()
-avg_night_freq = complete_data[complete_data['condition_type'] == 'hc']['fls_frequency'].mean()
-avg_day_freq = complete_data[complete_data['condition_type'] == 'cf']['fls_frequency'].mean()
+def generate_comprehensive_statistics(complete_data):
+    """Generate comprehensive statistics for all 4 combinations"""
+    
+    print("\n" + "=" * 80)
+    print("COMPREHENSIVE STATISTICS FOR ALL 4 COMBINATIONS")
+    print("=" * 80)
+    
+    # Calculate statistics for each combination
+    combinations_stats = {}
+    
+    combinations = [
+        ('jour', 'cf'),
+        ('jour', 'hc'), 
+        ('nuit', 'cf'),
+        ('nuit', 'hc')
+    ]
+    
+    print(f"\n{'COMBINATION':<20} {'RECORDS':<10} {'AVG FREQ':<12} {'TOTAL HOURS':<15} {'STATIONS':<10}")
+    print("-" * 70)
+    
+    for period, condition in combinations:
+        combo_name = f"{period}_{condition}"
+        combo_data = get_data_combination(complete_data, period, condition)
+        
+        if len(combo_data) > 0:
+            avg_freq = combo_data['fls_frequency'].mean()
+            total_hours = combo_data['fls_hours'].sum()
+            num_stations = combo_data['station'].nunique()
+            num_records = len(combo_data)
+            
+            combinations_stats[combo_name] = {
+                'avg_frequency': avg_freq,
+                'total_hours': total_hours,
+                'stations': num_stations,
+                'records': num_records
+            }
+            
+            print(f"{combo_name:<20} {num_records:<10} {avg_freq:<11.1f}% {total_hours:<14,} {num_stations:<10}")
+    
+    # Comparison analysis
+    print(f"\nCOMPARISON ANALYSIS:")
+    print("-" * 40)
+    
+    # Compare jour vs nuit for each condition type
+    print(f"\nJour vs Nuit comparison:")
+    for condition in ['cf', 'hc']:
+        jour_data = get_data_combination(complete_data, 'jour', condition)
+        nuit_data = get_data_combination(complete_data, 'nuit', condition)
+        
+        if len(jour_data) > 0 and len(nuit_data) > 0:
+            jour_avg = jour_data['fls_frequency'].mean()
+            nuit_avg = nuit_data['fls_frequency'].mean()
+            diff = nuit_avg - jour_avg
+            
+            print(f"  {condition.upper()}: Jour {jour_avg:.1f}% vs Nuit {nuit_avg:.1f}% = {diff:+.1f}%")
+    
+    # Compare cf vs hc for each period
+    print(f"\nCF vs HC comparison:")
+    for period in ['jour', 'nuit']:
+        cf_data = get_data_combination(complete_data, period, 'cf')
+        hc_data = get_data_combination(complete_data, period, 'hc')
+        
+        if len(cf_data) > 0 and len(hc_data) > 0:
+            cf_avg = cf_data['fls_frequency'].mean()
+            hc_avg = hc_data['fls_frequency'].mean()
+            diff = hc_avg - cf_avg
+            
+            print(f"  {period.capitalize()}: CF {cf_avg:.1f}% vs HC {hc_avg:.1f}% = {diff:+.1f}%")
+    
+    return combinations_stats
 
-print(f"\nSUMMARY STATISTICS:")
-print(f"Average night FLS frequency (6h-18h): {avg_night_freq:.1f}%")
-print(f"Average day FLS frequency (18h-6h): {avg_day_freq:.1f}%")
-print(f"Total night FLS hours: {total_night_hours:,}")
-print(f"Total day FLS hours: {total_day_hours:,}")
-print(f"Night/Day ratio: {total_night_hours/total_day_hours:.2f}")
+# Execute the complete mapping process
+print("STARTING COMPREHENSIVE FLS MAPPING PROCESS FOR 2024")
+print("=" * 80)
+print("PROCESSING ALL 4 COMBINATIONS:")
+print("1. JOUR_CF - Jour (18h-6h) avec conditions faibles")
+print("2. JOUR_HC - Jour (18h-6h) avec conditions élevées") 
+print("3. NUIT_CF - Nuit (6h-18h) avec conditions faibles")
+print("4. NUIT_HC - Nuit (6h-18h) avec conditions élevées")
+print("=" * 80)
 
-# Find stations with highest night FLS
-highest_night = night_station_summary.loc[night_station_summary['fls_frequency'].idxmax()]
-lowest_night = night_station_summary.loc[night_station_summary['fls_frequency'].idxmin()]
+# Create maps for all 4 combinations
+results = create_all_combinations_maps(complete_data)
 
-print(f"\nNIGHT FLS EXTREMES:")
-print(f"Highest night FLS: {highest_night['station']} ({highest_night['fls_frequency']:.1f}%)")
-print(f"Lowest night FLS: {lowest_night['station']} ({lowest_night['fls_frequency']:.1f}%)")
+# Generate comprehensive statistics
+stats = generate_comprehensive_statistics(complete_data)
 
-print(f"\nAll maps saved to: {output_dir}/")
-print(f"Map extent: Longitude [-20, -1], Latitude [20, 36]")
-print(f"Coastline color: BLACK (updated from blue)")
+# Print final summary
+print("\n" + "=" * 80)
+print("MAPPING PROCESS COMPLETED SUCCESSFULLY!")
+print("=" * 80)
+print(f"MAPS CREATED FOR ALL 4 COMBINATIONS:")
+for combo_name, dir_path in output_dirs.items():
+    print(f"  • {combo_name.upper()}: {dir_path}/")
+print(f"\nTOTAL MAPS CREATED PER COMBINATION:")
+print(f"  • 1 annual map")
+print(f"  • 12 monthly maps") 
+print(f"  • 4 seasonal maps")
+print(f"  • TOTAL: 17 maps per combination × 4 combinations = 68 maps")
+print(f"\nYear: 2024")
+print(f"Winter: December 2024, January 2024, February 2024")
+print("=" * 80)
