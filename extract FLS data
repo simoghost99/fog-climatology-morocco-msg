@@ -1,0 +1,193 @@
+Aucun élément sélectionné
+
+Passer au contenu
+Utiliser Gmail avec un lecteur d'écran
+Conversations
+89 % de 15 Go utilisés
+Conditions · Confidentialité · Règlements du programme
+Dernière activité sur le compte : il y a 12 minutes
+Détails
+import os
+import numpy as np
+import pandas as pd
+from netCDF4 import Dataset
+import geopandas as gpd
+from shapely.geometry import Point
+from tqdm import tqdm
+
+# --- Load Morocco shapefile once ---
+shapefile_path = "../data/maroc shape file/Morocco_ADM0_simplified.simplified(1).geojson"
+gdf = gpd.read_file(shapefile_path)
+morocco_geom = gdf.geometry.unary_union  # merge all polygons
+
+# --- Stations data ---
+
+stations_df =  pd.read_csv('station_df.csv')
+
+# --- Function to extract binary FLS mask from NetCDF ---
+def extract_FLS_maroc(nc_file):
+    try:
+        nc = Dataset(nc_file, 'r')
+        channel_4 = nc.variables['channel_4'][:]
+        channel_9 = nc.variables['channel_9'][:]
+        channel_10 = nc.variables['channel_10'][:]
+        latitudes = nc.variables['lat'][:]
+        longitudes = nc.variables['lon'][:]
+        date_time = nc.getncattr('date_time')
+        nc.close()
+
+        # Parse datetime
+        date_time_clean = date_time.replace('/', '')
+        month = int(date_time_clean[4:6])
+        hour = int(date_time_clean[8:10])
+
+        # Night filter (18h–06h) - CORRECTION: utiliser AND au lieu de OR
+        if not (hour >= 18 or hour < 6):  # 18h-06h du lendemain
+            return None
+
+        # Radiance to TB conversion constants
+        C1, C2 = 1.19104e-5, 1.43877
+        A9, B9, vc9 = 0.9983, 0.627, 930.659
+        A4, B4, vc4 = 0.9959, 3.471, 2569.094
+        A10, B10, vc10 = 0.9914, 0.408, 839.662
+
+        # Filter fill values
+        for ch in [channel_4, channel_9, channel_10]:
+            ch[ch == -1000] = np.nan
+
+        TB9 = (C2 * vc9 / np.log((C1 * (vc9**3) / channel_9) + 1) - B9) / A9
+        TB4 = (C2 * vc4 / np.log((C1 * (vc4**3) / channel_4) + 1) - B4) / A4
+        TB10 = (C2 * vc10 / np.log((C1 * (vc10**3) / channel_10) + 1) - B10) / A10
+
+        red = TB10 - TB9
+        green = TB9 - TB4
+        blue = TB9
+
+        # FLS detection condition
+        fls_mask = (green >= 4.5) & (green <= 10) & (red >= -2) & (red <= 2) & (blue >= 275) & (blue <= 293)
+
+        # Flip for geographic orientation
+        fls_mask = np.flipud(fls_mask)
+        latitudes = latitudes[::-1]
+
+        return fls_mask.astype(np.uint8), latitudes, longitudes, (month, hour)
+    
+    except Exception as e:
+        print(f"Error in extract_FLS_maroc for {nc_file}: {e}")
+        return None
+
+# --- Function to find nearest pixel and check 9-pixel neighborhood ---
+def check_station_fls(fls_mask, latitudes, longitudes, station_lat, station_lon):
+    """
+    Check FLS for a station using 9-pixel neighborhood
+    Returns 1 if any of the 9 pixels has FLS=1, 0 otherwise
+    """
+    try:
+        # Find the closest pixel to station coordinates
+        lat_diff = np.abs(latitudes - station_lat)
+        lon_diff = np.abs(longitudes - station_lon)
+        
+        # Find the index of the closest pixel
+        closest_lat_idx = np.argmin(lat_diff)
+        closest_lon_idx = np.argmin(lon_diff)
+        
+        # Get 3x3 neighborhood (handle boundaries)
+        lat_start = max(0, closest_lat_idx - 1)
+        lat_end = min(len(latitudes), closest_lat_idx + 2)
+        lon_start = max(0, closest_lon_idx - 1)
+        lon_end = min(len(longitudes), closest_lon_idx + 2)
+        
+        # Extract the 3x3 neighborhood from FLS mask
+        neighborhood = fls_mask[lat_start:lat_end, lon_start:lon_end]
+        
+        # If any pixel in neighborhood has FLS=1, return 1, else 0
+        if np.any(neighborhood == 1):
+            return 1
+        else:
+            return 0
+    except Exception as e:
+        print(f"Error in check_station_fls: {e}")
+        return 0
+
+# --- Main processing function ---
+def process_nc_files_for_stations(nc_directory):
+    """
+    Process all NetCDF files and create FLS DataFrames for each station
+    """
+    # Initialize results dictionary
+    results = {station: [] for station in stations_df['LIBESTAT']}
+    dates_list = []
+    
+    # Get list of NetCDF files
+    nc_files = [f for f in os.listdir(nc_directory) if f.endswith('.nc')]
+    
+    print(f"Processing {len(nc_files)} NetCDF files...")
+    
+    for nc_file in tqdm(nc_files):
+        nc_path = os.path.join(nc_directory, nc_file)
+        
+        try:
+            # Extract FLS mask and coordinates
+            result = extract_FLS_maroc(nc_path)
+            
+            # Skip if None (not night time or error)
+            if result is None:
+                continue
+                
+            fls_mask, lats, lons, (month, hour) = result
+            
+            # Extract date from filename
+            # Assuming filename format: HRSEVIRI_20240401T110009Z_20240401T111241Z_epct_210db349_FPC.nc
+            date_part = nc_file.split('_')[1]  # '20240401T110009Z'
+            date_str = date_part[:8]  # '20240401'
+            full_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} {hour:02d}:00:00"
+            dates_list.append(full_date)
+            
+            # Check FLS for each station
+            for _, station in stations_df.iterrows():
+                station_name = station['LIBESTAT']
+                station_lat = station['LAT']
+                station_lon = station['LON']
+                
+                fls_value = check_station_fls(fls_mask, lats, lons, station_lat, station_lon)
+                results[station_name].append(fls_value)
+                
+        except Exception as e:
+            print(f"Error processing {nc_file}: {e}")
+            continue
+    
+    # Create DataFrames for each station
+    station_dfs = {}
+    for station_name in stations_df['LIBESTAT']:
+        if len(results[station_name]) > 0:  # Only create DF if we have data
+            station_dfs[station_name] = pd.DataFrame({
+                'datetime': dates_list,
+                'fls': results[station_name]
+            })
+            station_dfs[station_name]['datetime'] = pd.to_datetime(station_dfs[station_name]['datetime'])
+            station_dfs[station_name] = station_dfs[station_name].sort_values('datetime').reset_index(drop=True)
+        else:
+            station_dfs[station_name] = pd.DataFrame(columns=['datetime', 'fls'])
+            print(f"No data for station: {station_name}")
+    
+    return station_dfs
+
+# --- Usage example ---
+if __name__ == "__main__":
+    nc_directory = "../data/image_sat/"  # Update this path
+    
+    # Process files and get DataFrames
+    station_dataframes = process_nc_files_for_stations(nc_directory)
+    
+    # Access individual station DataFrames
+    for station_name, df in station_dataframes.items():
+        print(f"\n{station_name} FLS Data ({len(df)} records):")
+        if len(df) > 0:
+            print(df.head())
+        else:
+            print("No data available")
+        
+        # Save to CSV if needed
+        # df.to_csv(f"{station_name}_fls_data.csv", index=False)
+extract_fls_station.py
+Affichage de extract_fls_station.py en cours.
