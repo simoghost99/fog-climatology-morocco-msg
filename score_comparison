@@ -1,0 +1,868 @@
+# -*- coding: utf-8 -*-
+"""
+Complete script for FLS (Fog and Low Stratus) data analysis
+Satellite vs station data comparison
+"""
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from pathlib import Path
+import re
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+# Import Cartopy for geographic maps
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import geopandas as gpd
+from matplotlib.colors import LinearSegmentedColormap
+
+# Path configuration
+SATELLITE_PATH = r"C:\Users\moham\OneDrive\Documents\fog\flsparrgb"
+STATION_PATH = r"C:\Users\moham\OneDrive\Documents\fog\donnesfls"
+OUTPUT_PATH = r"C:\Users\moham\OneDrive\Documents\fog\results"
+
+# Create results directory if it doesn't exist
+os.makedirs(OUTPUT_PATH, exist_ok=True)
+
+# Display configuration
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
+class FogDataProcessor:
+    def __init__(self):
+        self.scores_df = pd.DataFrame()
+        self.station_mapping = self._create_station_mapping()
+        
+    def _create_station_mapping(self):
+        """Create mapping between station names in both directories"""
+        mapping = {
+            # Format: 'name_in_flsparrgb': 'name_in_donnesfls'
+            'AGADIR AL MASSIRA': 'AGADIR-MASSIRA',
+            'AL-HOUCEIMA': 'AL-HOCEIMA',
+            'FES-SAISS': 'FES-SAIS',
+            'KENITRA': 'KENITRA',
+            'LAAYOUNE': 'LAAYOUNE',
+            'MARRAKECH': 'MARRAKECH',
+            'MEKNES': 'MEKNES',
+            'NOUASSEUR': 'NOUASSEUR',
+            'OUJDA': 'OUJDA',
+            'RABAT-SALE': 'RABAT-SALE',
+            'SIDI SLIMANE': 'SIDI-SLIMANE',
+            'TANGER-AERO': 'TANGER-AERO',
+            # Add TETOUAN even if not in flsparrgb
+            'TETOUAN': 'TETOUAN'
+        }
+        return mapping
+    
+    def parse_satellite_station_name(self, filename):
+        """Extract station name from satellite file"""
+        # Remove extension and 'fls_RGB'
+        name = filename.replace('fls_RGB.csv', '').replace('.csv', '').strip()
+        return name
+    
+    def parse_station_filename(self, filename):
+        """Extract station name and month from station file"""
+        # Pattern to extract name and month
+        pattern = r'([A-Z\-]+)-(\d{2})2024_fls_600(cf|hc)\.xlsx'
+        match = re.match(pattern, filename)
+        if match:
+            station_name = match.group(1)
+            month = int(match.group(2))
+            fog_type = match.group(3)
+            return station_name, month, fog_type
+        return None, None, None
+    
+    def load_satellite_data(self, file_path):
+        """Load satellite data"""
+        try:
+            print(f"Loading satellite data: {file_path.name}")
+            df = pd.read_csv(file_path)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            df['date'] = df['datetime'].dt.date
+            df['hour'] = df['datetime'].dt.hour
+            df['month'] = df['datetime'].dt.month
+            df['year'] = df['datetime'].dt.year
+            print(f"  Satellite data loaded: {len(df)} rows")
+            return df
+        except Exception as e:
+            print(f"Error loading satellite {file_path}: {e}")
+            return None
+    
+    def load_station_data(self, file_path, fog_type='cf'):
+        """Load station data with constraint type"""
+        try:
+            print(f"Loading station data: {file_path.name}")
+            df = pd.read_excel(file_path)
+            
+            # Standardize column names
+            df.columns = [col.lower().strip() for col in df.columns]
+            
+            # Check required columns
+            required_cols = ['jour', 'hour']
+            if not all(col in df.columns for col in required_cols):
+                print(f"Missing columns in {file_path.name}. Available columns: {df.columns.tolist()}")
+                return None
+            
+            # Find FLS column (may be called 'fls' or something else)
+            fls_col = None
+            for col in df.columns:
+                if 'fls' in col.lower():
+                    fls_col = col
+                    break
+            
+            if fls_col is None:
+                print(f"No FLS column found in {file_path.name}")
+                return None
+            
+            # Convert date and time
+            df['datetime'] = pd.to_datetime(df['jour'].astype(str) + 
+                                          df['hour'].astype(str).str.zfill(2), 
+                                          format='%Y%m%d%H')
+            df['date'] = df['datetime'].dt.date
+            df['hour'] = df['datetime'].dt.hour
+            df['month'] = df['datetime'].dt.month
+            df['year'] = df['datetime'].dt.year
+            
+            # Rename FLS column for standardization
+            df.rename(columns={fls_col: 'fls'}, inplace=True)
+            
+            print(f"  Station data loaded: {len(df)} rows")
+            return df
+        except Exception as e:
+            print(f"Error loading station {file_path}: {e}")
+            return None
+    
+    def calculate_verification_scores(self, observed, forecast):
+        """Calculate verification scores"""
+        # Convert to boolean for FLS present/absent
+        obs_bool = (observed > 0).astype(int)
+        fc_bool = (forecast > 0).astype(int)
+        
+        # Contingency table
+        a = ((fc_bool == 1) & (obs_bool == 1)).sum()  # Hits
+        b = ((fc_bool == 1) & (obs_bool == 0)).sum()  # False alarms
+        c = ((fc_bool == 0) & (obs_bool == 1)).sum()  # Misses
+        d = ((fc_bool == 0) & (obs_bool == 0)).sum()  # Correct negatives
+        
+        # Calculate scores
+        scores = {}
+        
+        # POD (Probability Of Detection)
+        if (a + c) > 0:
+            scores['POD'] = a / (a + c)
+        else:
+            scores['POD'] = np.nan
+            
+        # FAR (False Alarm Ratio)
+        if (a + b) > 0:
+            scores['FAR'] = b / (a + b)
+        else:
+            scores['FAR'] = np.nan
+            
+        # FBIAS (Frequency Bias)
+        if (a + c) > 0:
+            scores['FBIAS'] = (a + b) / (a + c)
+        else:
+            scores['FBIAS'] = np.nan
+            
+        # POFD (Probability Of False Detection)
+        if (b + d) > 0:
+            scores['POFD'] = b / (b + d)
+        else:
+            scores['POFD'] = np.nan
+            
+        # TS (Threat Score)
+        if (a + b + c) > 0:
+            scores['TS'] = a / (a + b + c)
+        else:
+            scores['TS'] = np.nan
+            
+        # HSS (Heidke Skill Score)
+        denominator = ((a+c)*(c+d) + (a+b)*(b+d))
+        if denominator > 0:
+            scores['HSS'] = 2*(a*d - b*c) / denominator
+        else:
+            scores['HSS'] = np.nan
+            
+        # Accuracy
+        if (a + b + c + d) > 0:
+            scores['ACCURACY'] = (a + d) / (a + b + c + d)
+        else:
+            scores['ACCURACY'] = np.nan
+            
+        # Base rates
+        total = a + b + c + d
+        if total > 0:
+            scores['OBS_RATE'] = (a + c) / total
+            scores['FC_RATE'] = (a + b) / total
+        else:
+            scores['OBS_RATE'] = np.nan
+            scores['FC_RATE'] = np.nan
+        
+        # Counts
+        scores['HITS'] = a
+        scores['FALSE_ALARMS'] = b
+        scores['MISSES'] = c
+        scores['CORRECT_NEGATIVES'] = d
+        
+        return scores
+    
+    def process_station_month(self, station_name, satellite_df, station_files, fog_type='cf'):
+        """Process data for a specific station and month"""
+        print(f"\n=== Processing station: {station_name} ({fog_type}) ===")
+        
+        all_monthly_results = []
+        
+        # Process each station file (each month)
+        for station_file in station_files:
+            station_name_from_file, month, file_fog_type = self.parse_station_filename(station_file.name)
+            
+            # Verify type matches
+            if file_fog_type != fog_type:
+                continue
+                
+            print(f"  Processing month {month:02d}/2024")
+            
+            # Load station data for this month
+            stat_df = self.load_station_data(station_file, fog_type)
+            if stat_df is None:
+                continue
+            
+            # Filter satellite data for the same month
+            sat_month_df = satellite_df[satellite_df['month'] == month].copy()
+            if sat_month_df.empty:
+                print(f"    No satellite data for month {month}")
+                continue
+            
+            # Merge data on datetime
+            merged_df = pd.merge(
+                sat_month_df, 
+                stat_df[['datetime', 'fls']], 
+                on='datetime', 
+                how='inner',
+                suffixes=('_sat', '_stat')
+            )
+            
+            if merged_df.empty:
+                print(f"    No common data for month {month}")
+                continue
+            
+            print(f"    Merged data: {len(merged_df)} common observations")
+            
+            # Calculate scores for this month
+            monthly_scores = self.calculate_verification_scores(
+                merged_df['fls_stat'], merged_df['fls_sat']
+            )
+            monthly_scores.update({
+                'station': station_name,
+                'period': 'monthly',
+                'month': month,
+                'year': 2024,
+                'fog_type': fog_type,
+                'n_obs': len(merged_df)
+            })
+            all_monthly_results.append(monthly_scores)
+        
+        # Calculate annual scores if we have data
+        if all_monthly_results:
+            # Combine all months to calculate annual scores
+            all_station_data = []
+            for station_file in station_files:
+                station_name_from_file, month, file_fog_type = self.parse_station_filename(station_file.name)
+                if file_fog_type == fog_type:
+                    stat_df = self.load_station_data(station_file, fog_type)
+                    if stat_df is not None:
+                        sat_month_df = satellite_df[satellite_df['month'] == month].copy()
+                        if not sat_month_df.empty:
+                            merged_df = pd.merge(
+                                sat_month_df, 
+                                stat_df[['datetime', 'fls']], 
+                                on='datetime', 
+                                how='inner',
+                                suffixes=('_sat', '_stat')
+                            )
+                            if not merged_df.empty:
+                                all_station_data.append(merged_df)
+            
+            if all_station_data:
+                annual_merged_df = pd.concat(all_station_data, ignore_index=True)
+                annual_scores = self.calculate_verification_scores(
+                    annual_merged_df['fls_stat'], annual_merged_df['fls_sat']
+                )
+                annual_scores.update({
+                    'station': station_name,
+                    'period': 'annual',
+                    'month': 'all',
+                    'year': 2024,
+                    'fog_type': fog_type,
+                    'n_obs': len(annual_merged_df)
+                })
+                all_monthly_results.append(annual_scores)
+                
+                print(f"  ✓ Scores calculated for {station_name} ({fog_type}) - {len(annual_merged_df)} annual observations")
+            else:
+                print(f"  ✗ No annual data for {station_name} ({fog_type})")
+        
+        return pd.DataFrame(all_monthly_results) if all_monthly_results else None
+
+class FogVisualizer:
+    def __init__(self, results_df):
+        self.results_df = results_df
+        self.station_coords = self._get_station_coordinates()
+        # Load Morocco shapefile
+        self.shapefile_path = "C:/Users/moham/OneDrive/Documents/fog/Morocco_ADM0_simplified.simplified.geojson"
+        try:
+            self.gdf = gpd.read_file(self.shapefile_path)
+            self.has_shapefile = True
+            print("Morocco shapefile loaded successfully")
+        except Exception as e:
+            print(f"Morocco shapefile not found: {e}")
+            print("Using default Cartopy borders")
+            self.has_shapefile = False
+    
+    def _get_station_coordinates(self):
+        """Define exact station coordinates"""
+        coords = {
+            'AGADIR-MASSIRA': (30.32248, -9.406004),
+            'AL-HOCEIMA': (35.17951, -3.840237),
+            'FES-SAIS': (33.930295, -4.973148),
+            'KENITRA': (34.3, -6.6),
+            'LAAYOUNE': (27.147795, -13.229644),
+            'MARRAKECH': (31.611017, -8.028572),
+            'MEKNES': (33.879122, -5.520616),
+            'NOUASSEUR': (33.366667, -7.583333),
+            'OUJDA': (34.783556, -1.93875),
+            'RABAT-SALE': (34.05, -6.75),
+            'SIDI-SLIMANE': (34.233333, -6.05),
+            'TANGER-AERO': (35.731667, -5.910278),
+            'TETOUAN': (35.57413995, -5.365255754)
+        }
+        return coords
+    
+    def plot_spatial_scores(self, score_type, period='annual', fog_type='cf'):
+        """Spatial visualization of scores with Morocco map"""
+        # Filter data
+        data = self.results_df[
+            (self.results_df['period'] == period) & 
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+        
+        if data.empty:
+            print(f"No data for {period}, {fog_type}")
+            return
+        
+        # Prepare data for map
+        stations_data = []
+        for station in data['station'].unique():
+            station_scores = data[data['station'] == station]
+            avg_score = station_scores[score_type].mean()
+            
+            if station in self.station_coords:
+                lat, lon = self.station_coords[station]
+                stations_data.append({
+                    'station': station,
+                    'lat': lat,
+                    'lon': lon,
+                    'score': avg_score
+                })
+            else:
+                print(f"Missing coordinates for station: {station}")
+        
+        if not stations_data:
+            print("No coordinates available for stations")
+            return
+        
+        map_df = pd.DataFrame(stations_data)
+        
+        # Create map with Cartopy
+        fig = plt.figure(figsize=(14, 10))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        
+        # Set map extent (Morocco)
+        ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+        
+        # Add only coastline (not Cartopy political borders)
+        ax.add_feature(cfeature.COASTLINE, linewidth=1.2, edgecolor='black')
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+        
+        # Add Morocco shapefile if available - FIRST the borders
+        if self.has_shapefile:
+            self.gdf.boundary.plot(ax=ax, edgecolor="black", linewidth=1.5, 
+                                 transform=ccrs.PlateCarree(), zorder=1)
+        
+        # Plot stations - THEN the circles (higher zorder)
+        scatter = ax.scatter(map_df['lon'], map_df['lat'], 
+                           c=map_df['score'], cmap='RdYlBu_r', 
+                           s=200, alpha=0.8, edgecolors='black', linewidth=1,
+                           transform=ccrs.PlateCarree(), zorder=2)  # zorder=2 to be on top
+        
+        # Add grid
+        gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.3)
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Colorbar
+        cbar = plt.colorbar(scatter, ax=ax, orientation='vertical', shrink=0.8, pad=0.05)
+        cbar.set_label(f'Score {score_type}', fontsize=12)
+        
+        # Labels and title
+        ax.set_xlabel('Longitude', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Latitude', fontsize=12, fontweight='bold')
+        ax.set_title(f'Spatial distribution of {score_type} ({period.upper()}, {fog_type.upper()})', 
+                    fontsize=14, fontweight='bold', pad=20)
+        
+        plt.tight_layout()
+        
+        # Save figure
+        filename = f'{OUTPUT_PATH}/spatial_{score_type}_{period}_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Spatial map saved: {filename}")
+        plt.show()
+    
+    def plot_enhanced_spatial_scores(self, score_type, period='annual', fog_type='cf'):
+        """Enhanced version of spatial maps with professional style"""
+        # Filter data
+        data = self.results_df[
+            (self.results_df['period'] == period) & 
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+        
+        if data.empty:
+            print(f"No data for {period}, {fog_type}")
+            return
+        
+        # Prepare data for map
+        stations_data = []
+        for station in data['station'].unique():
+            station_scores = data[data['station'] == station]
+            avg_score = station_scores[score_type].mean()
+            
+            if station in self.station_coords:
+                lat, lon = self.station_coords[station]
+                stations_data.append({
+                    'station': station,
+                    'lat': lat,
+                    'lon': lon,
+                    'score': avg_score
+                })
+        
+        if not stations_data:
+            print("No coordinates available for stations")
+            return
+        
+        map_df = pd.DataFrame(stations_data)
+        
+        # Create custom colormap
+        colors = [
+            (0.0, 'darkblue'),
+            (0.3, 'lightblue'),
+            (0.5, 'lightgreen'),
+            (0.7, 'yellow'),
+            (1.0, 'red')
+        ]
+        cmap_custom = LinearSegmentedColormap.from_list("custom_blue_green_yellow_red", 
+                                                       [c[1] for c in colors], N=256)
+        
+        # Create map with Cartopy
+        fig = plt.figure(figsize=(16, 12))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+        
+        # Set map extent (extended Morocco)
+        ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+        
+        # Add only coastline (not Cartopy political borders)
+        ax.add_feature(cfeature.COASTLINE, linewidth=1.5, edgecolor='navy', zorder=1)
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.4, zorder=0)
+        ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2, zorder=0)
+        
+        # Add Morocco shapefile if available - FIRST the borders
+        if self.has_shapefile:
+            self.gdf.boundary.plot(ax=ax, edgecolor="black", linewidth=2, 
+                                 transform=ccrs.PlateCarree(), zorder=1)
+        
+        # Plot stations with variable size according to score - THEN the circles
+        sizes = 100 + (map_df['score'] * 200)  # Size proportional to score
+        scatter = ax.scatter(map_df['lon'], map_df['lat'], 
+                           c=map_df['score'], cmap=cmap_custom,
+                           s=sizes, alpha=0.8, edgecolors='black', linewidth=1.5,
+                           transform=ccrs.PlateCarree(), vmin=0, vmax=1, zorder=2)  # zorder=2 to be on top
+        
+        # Add enhanced grid
+        gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, 
+                         alpha=0.4, linestyle='--', color='gray', zorder=1)
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'size': 10, 'color': 'black'}
+        gl.ylabel_style = {'size': 10, 'color': 'black'}
+        
+        # Enhanced colorbar
+        cbar = plt.colorbar(scatter, ax=ax, orientation='vertical', 
+                           shrink=0.8, pad=0.03, aspect=20)
+        cbar.set_label(f'Score {score_type}', fontsize=12, fontweight='bold')
+        cbar.ax.tick_params(labelsize=10)
+        
+        # Enhanced labels and title
+        ax.set_xlabel('Longitude', fontsize=12, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Latitude', fontsize=12, fontweight='bold', labelpad=10)
+        ax.set_title(f'Spatial distribution of {score_type}\n({period.upper()}, {fog_type.upper()})', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        # Add footer note
+        ax.text(0.02, 0.02, f"Data: Morocco meteorological stations\nPeriod: {period} 2024", 
+               transform=ax.transAxes, fontsize=9,
+               bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8),
+               zorder=3)
+        
+        plt.tight_layout()
+        
+        # Save figure
+        filename = f'{OUTPUT_PATH}/enhanced_spatial_{score_type}_{period}_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Enhanced spatial map saved: {filename}")
+        plt.show()
+    
+    def plot_monthly_scores(self, station=None, score_type='POD', fog_type='cf'):
+        """Monthly evolution of scores"""
+        if station:
+            data = self.results_df[
+                (self.results_df['station'] == station) &
+                (self.results_df['period'] == 'monthly') &
+                (self.results_df['fog_type'] == fog_type)
+            ].copy()
+            title = f'Monthly evolution of {score_type} - {station} ({fog_type.upper()})'
+            filename_suffix = f'_{station}'
+        else:
+            data = self.results_df[
+                (self.results_df['period'] == 'monthly') &
+                (self.results_df['fog_type'] == fog_type)
+            ].copy()
+            # Average by month across all stations
+            data = data.groupby('month', as_index=False).agg({
+                'POD': 'mean',
+                'FAR': 'mean',
+                'FBIAS': 'mean',
+                'TS': 'mean',
+                'HSS': 'mean',
+                'n_obs': 'sum'
+            })
+            title = f'Monthly evolution of {score_type} - Average all stations ({fog_type.upper()})'
+            filename_suffix = '_all_stations'
+        
+        if data.empty:
+            print(f"No monthly data for {score_type}, {fog_type}")
+            return
+        
+        plt.figure(figsize=(12, 7))
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        
+        plt.plot(data['month'], data[score_type], 'o-', linewidth=3, 
+                markersize=8, markerfacecolor='white', markeredgewidth=2)
+        
+        plt.xlabel('Month', fontsize=12)
+        plt.ylabel(score_type, fontsize=12)
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.xticks(range(1, 13), months, rotation=45)
+        plt.ylim(0, 1)
+        
+        # Add values on points
+        for i, (month, score) in enumerate(zip(data['month'], data[score_type])):
+            plt.annotate(f'{score:.2f}', (month, score), 
+                        xytext=(0, 10), textcoords='offset points',
+                        ha='center', fontsize=9)
+        
+        plt.tight_layout()
+        
+        # Save figure
+        filename = f'{OUTPUT_PATH}/monthly_{score_type}_{fog_type}{filename_suffix}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Monthly chart saved: {filename}")
+        plt.show()
+    
+    def plot_score_comparison(self, fog_type='cf'):
+        """Score comparison between stations"""
+        annual_data = self.results_df[
+            (self.results_df['period'] == 'annual') & 
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+        
+        if annual_data.empty:
+            print(f"No annual data for {fog_type}")
+            return
+        
+        # Select main scores
+        scores_to_plot = ['POD', 'FAR', 'FBIAS', 'TS']
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+        
+        for i, score in enumerate(scores_to_plot):
+            ax = axes[i]
+            station_data = annual_data[['station', score]].dropna()
+            station_data = station_data.sort_values(score)
+            
+            bars = ax.barh(station_data['station'], station_data[score], 
+                          color=plt.cm.viridis(np.linspace(0, 1, len(station_data))))
+            
+            ax.set_xlabel(score)
+            ax.set_title(f'{score} by Station ({fog_type.upper()})')
+            ax.grid(True, alpha=0.3, axis='x')
+            
+            # Add values on bars
+            for bar in bars:
+                width = bar.get_width()
+                ax.text(width + 0.01, bar.get_y() + bar.get_height()/2, 
+                       f'{width:.2f}', ha='left', va='center', fontsize=9)
+        
+        plt.tight_layout()
+        filename = f'{OUTPUT_PATH}/score_comparison_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Score comparison saved: {filename}")
+        plt.show()
+    
+    def create_summary_tables(self):
+        """Create summary tables"""
+        print("\nCreating summary tables...")
+        
+        # Annual table by station
+        annual_data = self.results_df[self.results_df['period'] == 'annual']
+        
+        summary_annual = annual_data.groupby(['station', 'fog_type']).agg({
+            'POD': 'mean',
+            'FAR': 'mean', 
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'ACCURACY': 'mean',
+            'n_obs': 'sum',
+            'HITS': 'sum',
+            'FALSE_ALARMS': 'sum',
+            'MISSES': 'sum'
+        }).round(3)
+        
+        # Monthly average table
+        monthly_data = self.results_df[self.results_df['period'] == 'monthly']
+        summary_monthly = monthly_data.groupby(['month', 'fog_type']).agg({
+            'POD': 'mean',
+            'FAR': 'mean',
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'n_obs': 'sum'
+        }).round(3)
+        
+        # Global summary
+        global_summary = annual_data.groupby('fog_type').agg({
+            'POD': 'mean',
+            'FAR': 'mean',
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'n_obs': 'sum'
+        }).round(3)
+        
+        # Save tables
+        summary_annual.to_csv(f'{OUTPUT_PATH}/summary_annual.csv')
+        summary_monthly.to_csv(f'{OUTPUT_PATH}/summary_monthly.csv')
+        global_summary.to_csv(f'{OUTPUT_PATH}/summary_global.csv')
+        
+        print("Summary tables created successfully!")
+        
+        # Display global summary
+        print("\n=== GLOBAL SUMMARY ===")
+        print(global_summary)
+        
+        return summary_annual, summary_monthly, global_summary
+
+def main():
+    """Main function"""
+    print("=== STARTING FLS ANALYSIS ===")
+    
+    # Create processor
+    processor = FogDataProcessor()
+    
+    # List files
+    satellite_files = list(Path(SATELLITE_PATH).glob('*fls_RGB.csv'))
+    station_files = list(Path(STATION_PATH).glob('*fls_600*.xlsx'))
+    
+    print(f"Satellite files found: {len(satellite_files)}")
+    print(f"Station files found: {len(station_files)}")
+    
+    all_results = []
+    
+    # Process only stations that have data in donnesfls
+    stations_to_process = []
+    
+    # Identify stations available in donnesfls
+    for station_file in station_files:
+        station_name, month, fog_type = processor.parse_station_filename(station_file.name)
+        if station_name and station_name not in stations_to_process:
+            stations_to_process.append(station_name)
+    
+    print(f"\nStations to process ({len(stations_to_process)}): {stations_to_process}")
+    
+    # For each station in donnesfls, find corresponding satellite file
+    for station_donnesfls in stations_to_process:
+        print(f"\n=== Processing station: {station_donnesfls} ===")
+        
+        # Find corresponding name in flsparrgb
+        satellite_station_name = None
+        for sat_name, donnesfls_name in processor.station_mapping.items():
+            if donnesfls_name == station_donnesfls:
+                satellite_station_name = sat_name
+                break
+        
+        if not satellite_station_name:
+            print(f"  No satellite file match found for {station_donnesfls}")
+            continue
+        
+        # Find satellite file
+        satellite_file = None
+        for sat_file in satellite_files:
+            sat_station_from_file = processor.parse_satellite_station_name(sat_file.name)
+            if sat_station_from_file == satellite_station_name:
+                satellite_file = sat_file
+                break
+        
+        if not satellite_file:
+            print(f"  Satellite file not found for {satellite_station_name}")
+            continue
+        
+        print(f"  Satellite file found: {satellite_file.name}")
+        
+        # Load satellite data once for the entire station
+        satellite_df = processor.load_satellite_data(satellite_file)
+        if satellite_df is None:
+            continue
+        
+        # Find all station files for this station
+        station_files_for_station = [
+            f for f in station_files 
+            if station_donnesfls in f.name
+        ]
+        
+        print(f"  Station files found: {len(station_files_for_station)}")
+        
+        # Process for each constraint type
+        for fog_type in ['cf', 'hc']:
+            results = processor.process_station_month(
+                station_donnesfls, satellite_df, station_files_for_station, fog_type
+            )
+            
+            if results is not None and not results.empty:
+                all_results.append(results)
+                print(f"  ✓ Scores calculated for {station_donnesfls} ({fog_type})")
+            else:
+                print(f"  ✗ Failed to calculate scores for {station_donnesfls} ({fog_type})")
+    
+    # Combine all results
+    if all_results:
+        final_results = pd.concat(all_results, ignore_index=True)
+        
+        # Save complete results
+        final_results.to_csv(f'{OUTPUT_PATH}/scores_fls_complete.csv', index=False)
+        
+        print(f"\n=== ANALYSIS COMPLETED SUCCESSFULLY ===")
+        print(f"Stations processed: {final_results['station'].nunique()}")
+        print(f"Fog types analyzed: {final_results['fog_type'].unique().tolist()}")
+        print(f"Total scores calculated: {len(final_results)}")
+        print(f"Results file: {OUTPUT_PATH}/scores_fls_complete.csv")
+        
+        return final_results
+    else:
+        print("\n=== NO RESULTS GENERATED ===")
+        return None
+
+# Function to run complete analysis
+def run_complete_analysis():
+    """Run complete analysis with visualizations"""
+    
+    # Step 1: Data processing
+    print("STEP 1: Data processing")
+    results_df = main()
+    
+    if results_df is None:
+        print("Analysis stopped: no data processed")
+        return
+    
+    # Step 2: Visualizations
+    print("\nSTEP 2: Creating visualizations")
+    visualizer = FogVisualizer(results_df)
+    
+    # Scores to visualize
+    scores_to_plot = ['POD', 'FAR', 'FBIAS', 'TS', 'HSS']
+    
+    # Normal spatial maps
+    print("\nCreating normal spatial maps...")
+    for score in scores_to_plot:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_spatial_scores(score, period='annual', fog_type=fog_type)
+    
+    # Enhanced spatial maps
+    print("\nCreating enhanced spatial maps...")
+    for score in scores_to_plot:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_enhanced_spatial_scores(score, period='annual', fog_type=fog_type)
+    
+    # Monthly charts
+    print("\nCreating monthly charts...")
+    for score in ['POD', 'FAR', 'TS']:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_monthly_scores(score_type=score, fog_type=fog_type)
+    
+    # Station comparisons
+    print("\nCreating station comparisons...")
+    for fog_type in results_df['fog_type'].unique():
+        visualizer.plot_score_comparison(fog_type=fog_type)
+    
+    # Step 3: Summary tables
+    print("\nSTEP 3: Generating summary tables")
+    annual_table, monthly_table, global_table = visualizer.create_summary_tables()
+    
+    # Step 4: Final report
+    print("\n" + "="*50)
+    print("FINAL REPORT")
+    print("="*50)
+    
+    stations = results_df['station'].unique()
+    fog_types = results_df['fog_type'].unique()
+    
+    print(f"\nStations analyzed ({len(stations)}):")
+    for station in sorted(stations):
+        print(f"  - {station}")
+    
+    print(f"\nFog types analyzed: {', '.join(fog_types)}")
+    
+    # Global statistics
+    for fog_type in fog_types:
+        fog_data = results_df[results_df['fog_type'] == fog_type]
+        annual_data = fog_data[fog_data['period'] == 'annual']
+        
+        if not annual_data.empty:
+            print(f"\nAverage performance ({fog_type.upper()}):")
+            print(f"  POD:    {annual_data['POD'].mean():.3f}")
+            print(f"  FAR:    {annual_data['FAR'].mean():.3f}")
+            print(f"  FBIAS:  {annual_data['FBIAS'].mean():.3f}")
+            print(f"  TS:     {annual_data['TS'].mean():.3f}")
+            print(f"  HSS:    {annual_data['HSS'].mean():.3f}")
+    
+    print(f"\nFiles generated in: {OUTPUT_PATH}")
+    print("✓ scores_fls_complete.csv - All detailed scores")
+    print("✓ summary_annual.csv - Annual summary by station")
+    print("✓ summary_monthly.csv - Monthly summary")
+    print("✓ summary_global.csv - Global summary")
+    print("✓ spatial_*.png - Normal spatial distribution maps")
+    print("✓ enhanced_spatial_*.png - Enhanced spatial distribution maps")
+    print("✓ monthly_*.png - Monthly evolution charts")
+    print("✓ score_comparison_*.png - Station comparisons")
+
+# Execute script
+if __name__ == "__main__":
+    run_complete_analysis()
