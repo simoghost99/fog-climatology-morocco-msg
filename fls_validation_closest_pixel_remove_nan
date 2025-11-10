@@ -1,0 +1,1390 @@
+
+1 sur 5 317
+Avancement du projet FLS : Méthodes et traitement des données
+Boîte de réception
+
+ABDELLAH MSAADI
+Pièces jointes
+16 h 31 (il y a 1 heure)
+à Driss, Abderrahim, moi
+
+​Analysis_obs_rgb.rar​
+
+Bonsoir [Nom du destinataire],
+Je vous écris pour vous présenter l’avancement de notre travail sur le projet FLS.
+Dans un premier temps, nous avons extrait les valeurs de FLS à partir des données satellitaires RGB, en utilisant deux approches :
+la méthode du pixel le plus proche,
+la méthode des 9 pixels.
+Nous avons également traité les valeurs manquantes dans les observations des stations à l’aide de deux méthodes :
+Remplacement des valeurs manquantes par la valeur la plus fréquente (souvent 0) ;
+Suppression de toutes les valeurs égales à –9999.
+Ces étapes nous ont permis d’obtenir une base de données plus complète et cohérente, contenant une quantité importante d’informations.
+Toutes les explications détaillées de ces traitements seront incluses dans le rapport , que nous prévoyons de envois dans les plus brefs délais.
+Je voulais simplement savoir s’il y a d’autres points que vous souhaitez que nous ajoutions, ou d’autres étapes que nous devrions encore développer.
+Bien cordialement,
+Abdellah et Mohamed
+
+ 8 pièces jointes
+  •  Analysées par Gmail
+
+Driss BARI
+16 h 45 (il y a 1 heure)
+à ABDELLAH, Abderrahim, moi
+
+Bonjour,
+
+Merci pour l'envoi des scripts et données générées selon l'ensemble des configurations demandées. Je vais jeter un coup d'œil et je reviens vers vous dans l'attente de la version du rapport mis à jour. 
+
+A la base des résultats obtenus, je vous indiquerai l'étape suivante.
+
+Bon courage pour la soutenance de vos SIP.
+
+Cordialement
+
+Driss
+
+
+
+
+# -*- coding: utf-8 -*-
+"""
+Script complet pour l'analyse des données FLS (Fog and Low Stratus)
+Comparaison données satellite vs stations - Méthode du pixel le plus proche
+"""
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
+from pathlib import Path
+import re
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+# Import Cartopy pour les cartes géographiques
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import geopandas as gpd
+from matplotlib.colors import LinearSegmentedColormap
+
+# Configuration des chemins
+SATELLITE_PATH = "../data/closest_lat_lon/"
+STATION_PATH = "../data/reanalysedesoccurrenceshorairesduflspour2024/"
+OUTPUT_PATH = "../results/remove_nan/results-nearst/"
+STATION_DATA_PATH = "../results/remove_nan/station_data/"  # Nouveau dossier pour les données de station
+HEATMAP_PATH = "../results/remove_nan/heatmaps/"  # Nouveau dossier pour les heatmaps
+
+# Créer les dossiers de résultats s'ils n'existent pas
+os.makedirs(OUTPUT_PATH, exist_ok=True)
+os.makedirs(STATION_DATA_PATH, exist_ok=True)
+os.makedirs(HEATMAP_PATH, exist_ok=True)  # Créer le dossier pour les heatmaps
+
+# Configuration de l'affichage
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+plt.rcParams['font.family'] = 'DejaVu Sans'
+
+class FogDataProcessor:
+    def __init__(self):
+        self.scores_df = pd.DataFrame()
+        self.station_mapping = self._create_station_mapping()
+        
+    def _create_station_mapping(self):
+        """Créer un mapping entre les noms de stations des deux dossiers"""
+        mapping = {
+            # Format: 'nom_dans_flsparrgb': 'nom_dans_donnesfls'
+            'AGADIR-AL-MASSIRA': 'AGADIR-MASSIRA',
+            'AL-HOUCEIMA': 'AL-HOCEIMA',
+            'FES-SAISS': 'FES-SAIS',
+            'KENITRA': 'KENITRA',
+            'LAAYOUNE': 'LAAYOUNE',
+            'MARRAKECH': 'MARRAKECH',
+            'MEKNES': 'MEKNES',
+            'NOUASSEUR': 'NOUASSEUR',
+            'OUJDA': 'OUJDA',
+            'RABAT-SALE': 'RABAT-SALE',
+            'SIDI-SLIMANE': 'SIDI-SLIMANE',
+            'TANGER-AERO': 'TANGER-AERO',
+            'TETOUAN': 'TETOUAN'
+        }
+        print("Mapping des stations créé:")
+        for key, value in mapping.items():
+            print(f"  '{key}' -> '{value}'")
+        return mapping
+    
+    def parse_satellite_station_name(self, filename):
+        """Extraire le nom de la station du fichier satellite"""
+        # Supprimer l'extension et 'fls_RGB'
+        name = filename.replace('-fls_RGB.csv', '').replace('.csv', '').strip()
+        return name
+    
+    def parse_station_filename(self, filename):
+        """Extraire le nom de la station et le mois du fichier station - version robuste"""
+        filename_str = str(filename)
+    
+        # Liste des stations possibles
+        possible_stations = [
+            'AGADIR-MASSIRA', 'AL-HOCEIMA', 'FES-SAIS', 'KENITRA', 
+            'LAAYOUNE', 'MARRAKECH', 'MEKNES', 'NOUASSEUR', 
+            'OUJDA', 'RABAT-SALE', 'SIDI-SLIMANE', 'TANGER-AERO', 'TETOUAN'
+        ]
+        
+        # Trouver la station dans le nom de fichier
+        station_name = None
+        for station in possible_stations:
+            if station in filename_str:
+                station_name = station
+                break
+        
+        if not station_name:
+            print(f"  Station non reconnue dans: {filename_str}")
+            return None, None, None
+        
+        # Extraire le mois
+        month_match = re.search(r'-(\d{1,2})2024', filename_str)
+        if not month_match:
+            print(f"  Mois non trouvé dans: {filename_str}")
+            return None, None, None
+        
+        month = int(month_match.group(1))
+        
+        # Déterminer le type de brouillard
+        if '600cf' in filename_str.lower():
+            fog_type = 'cf'
+        elif '600hc' in filename_str.lower():
+            fog_type = 'hc'
+        else:
+            print(f"  Type de brouillard non reconnu dans: {filename_str}")
+            return None, None, None
+        
+        return station_name, month, fog_type
+    
+    def load_satellite_data(self, file_path):
+        """Charger les données satellite avec gestion des NaN"""
+        try:
+            print(f"Chargement des données satellite: {file_path.name}")
+            df = pd.read_csv(file_path)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            df['date'] = df['datetime'].dt.date
+            df['hour'] = df['datetime'].dt.hour
+            df['month'] = df['datetime'].dt.month
+            df['year'] = df['datetime'].dt.year
+            
+            # Convertir la colonne FLS en numérique
+            print(f"  Colonnes disponibles: {df.columns.tolist()}")
+            
+            # Chercher la colonne FLS (peut s'appeler différemment)
+            fls_col = None
+            for col in df.columns:
+                if 'fls' in col.lower():
+                    fls_col = col
+                    break
+            
+            if fls_col is None:
+                print("  Aucune colonne FLS trouvée, utilisation de la première colonne après datetime")
+                # Prendre la première colonne qui n'est pas datetime
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    fls_col = numeric_cols[0]
+                    print(f"  Utilisation de la colonne: {fls_col}")
+                else:
+                    print("  Aucune colonne numérique trouvée")
+                    return None
+            
+            # Convertir en numérique, forcer les erreurs à NaN
+            df['fls_sat'] = pd.to_numeric(df[fls_col], errors='coerce')
+            
+            # NOUVEAU: Supprimer les lignes avec des valeurs NaN dans fls_sat
+            initial_count = len(df)
+            df = df.dropna(subset=['fls_sat'])
+            final_count = len(df)
+            nan_count = initial_count - final_count
+            
+            if nan_count > 0:
+                print(f"  Supprimé {nan_count} lignes avec des valeurs NaN dans les données satellite")
+            
+            # Vérifier la conversion
+            print(f"  Colonne FLS convertie: {fls_col} -> fls_sat")
+            print(f"  Valeurs uniques dans fls_sat: {df['fls_sat'].unique()[:10]}")
+            print(f"  Type de données: {df['fls_sat'].dtype}")
+            
+            print(f"  Données satellite chargées: {len(df)} lignes (après nettoyage)")
+            return df
+        except Exception as e:
+            print(f"Erreur chargement satellite {file_path}: {e}")
+            return None
+    
+    def load_station_data(self, file_path, fog_type='cf'):
+        """Charger les données station avec gestion des -9999 et NaN"""
+        try:
+            print(f"Chargement des données station: {file_path.name}")
+            df = pd.read_excel(file_path)
+            
+            # Standardiser les noms de colonnes
+            df.columns = [col.lower().strip() for col in df.columns]
+            
+            # Vérifier les colonnes requises
+            required_cols = ['jour', 'hour']
+            if not all(col in df.columns for col in required_cols):
+                print(f"Colonnes manquantes dans {file_path.name}. Colonnes disponibles: {df.columns.tolist()}")
+                return None
+            
+            # Trouver la colonne FLS (peut s'appeler 'fls' ou autre)
+            fls_col = None
+            for col in df.columns:
+                if 'fls' in col.lower():
+                    fls_col = col
+                    break
+            
+            if fls_col is None:
+                print(f"Aucune colonne FLS trouvée dans {file_path.name}")
+                return None
+            
+            # Convertir la date et l'heure
+            df['datetime'] = pd.to_datetime(df['jour'].astype(str) + 
+                                          df['hour'].astype(str).str.zfill(2), 
+                                          format='%Y%m%d%H')
+            df['date'] = df['datetime'].dt.date
+            df['hour'] = df['datetime'].dt.hour
+            df['month'] = df['datetime'].dt.month
+            df['year'] = df['datetime'].dt.year
+
+            # CORRECTION: Nettoyage approfondi des données station
+            print(f"  Type de données station avant conversion: {df[fls_col].dtype}")
+            print(f"  Exemple de valeurs station avant conversion: {df[fls_col].head(10).tolist()}")
+            
+            # Convertir en string d'abord pour nettoyer
+            df[fls_col] = df[fls_col].astype(str)
+            
+            # Nettoyer les chaînes de caractères
+            df[fls_col] = df[fls_col].str.strip().str.replace(' ', '').str.replace(',', '.').str.replace('"', '').str.replace("'", "")
+            
+            # NOUVEAU: Remplacer les valeurs -9999 par 0 (valeurs manquantes spécifiques)
+            df[fls_col] = df[fls_col].replace({
+                'nan': '0', 'NaN': '0', 'None': '0', 'none': '0',
+                'True': '1', 'False': '0', 'true': '1', 'false': '0',
+                '-9999': '0', '9999': '0', '-9999.0': '0', '9999.0': '0'  # Valeurs d'erreur courantes
+            })
+            
+            # Identifier les valeurs non numériques
+            numeric_mask = df[fls_col].str.match(r'^-?\d*\.?\d+$', na=False)
+            non_numeric_count = (~numeric_mask).sum()
+            
+            if non_numeric_count > 0:
+                print(f"  ATTENTION: {non_numeric_count} valeurs non-numériques trouvées dans les données station:")
+                problematic_values = df[~numeric_mask][fls_col].unique()
+                print(f"  Valeurs problématiques: {problematic_values}")
+                
+                # Essayer de convertir les valeurs problématiques
+                for val in problematic_values:
+                    try:
+                        # Essayer de convertir en float
+                        float_val = float(val)
+                        df.loc[df[fls_col] == val, fls_col] = str(float_val)
+                        print(f"    Converti '{val}' en '{float_val}'")
+                    except:
+                        # Si échec, remplacer par 0
+                        df.loc[df[fls_col] == val, fls_col] = '0'
+                        print(f"    Remplacé '{val}' par '0'")
+            
+            # Convertir en numérique
+            df['fls_stat'] = pd.to_numeric(df[fls_col], errors='coerce')
+            
+            # NOUVEAU: Supprimer les lignes avec des valeurs NaN dans fls_stat
+            initial_count = len(df)
+            df = df.dropna(subset=['fls_stat'])
+            final_count = len(df)
+            nan_count = initial_count - final_count
+            
+            if nan_count > 0:
+                print(f"  Supprimé {nan_count} lignes avec des valeurs NaN dans les données station")
+            
+            # S'assurer que les valeurs sont 0 ou 1
+            df['fls_stat'] = df['fls_stat'].clip(0, 1)
+            
+            # Vérifier la conversion finale
+            print(f"  Colonne FLS station convertie: {fls_col} -> fls_stat")
+            print(f"  Valeurs uniques dans fls_stat: {df['fls_stat'].unique()}")
+            print(f"  Type de données: {df['fls_stat'].dtype}")
+            print(f"  Distribution: 0={len(df[df['fls_stat']==0])}, 1={len(df[df['fls_stat']==1])}")
+            
+            print(f"  Données station chargées: {len(df)} lignes (après nettoyage)")
+            return df
+        except Exception as e:
+            print(f"Erreur chargement station {file_path}: {e}")
+            return None
+
+    def save_station_comparison_data(self, merged_df, station_name, fog_type):
+        """Sauvegarder les données de comparaison pour une station avec nettoyage des NaN"""
+        try:
+            # Sélectionner seulement les colonnes nécessaires
+            comparison_data = merged_df[['datetime', 'fls_stat', 'fls_sat']].copy()
+            
+            # Renommer les colonnes pour plus de clarté
+            comparison_data.columns = ['datetime', 'fls_station', 'fls_satellite']
+            
+            # NOUVEAU: Supprimer les lignes avec des valeurs NaN dans les deux colonnes
+            initial_count = len(comparison_data)
+            comparison_data = comparison_data.dropna(subset=['fls_station', 'fls_satellite'])
+            final_count = len(comparison_data)
+            nan_count = initial_count - final_count
+            
+            if nan_count > 0:
+                print(f"    Supprimé {nan_count} lignes avec des valeurs NaN dans les données de comparaison")
+            
+            # Trier par datetime
+            comparison_data = comparison_data.sort_values('datetime')
+            
+            # Sauvegarder dans un fichier CSV
+            filename = f"{STATION_DATA_PATH}/{station_name}_{fog_type}_comparison.csv"
+            comparison_data.to_csv(filename, index=False)
+            print(f"  ✓ Données de comparaison sauvegardées: {filename}")
+            print(f"    Nombre d'observations: {len(comparison_data)}")
+            print(f"    Période: {comparison_data['datetime'].min()} à {comparison_data['datetime'].max()}")
+            
+        except Exception as e:
+            print(f"  ✗ Erreur sauvegarde données {station_name}_{fog_type}: {e}")
+    
+    def _create_empty_scores(self):
+        """Créer un dictionnaire de scores vide"""
+        return {
+            'POD': np.nan, 'FAR': np.nan, 'FBIAS': np.nan, 'POFD': np.nan,
+            'TS': np.nan, 'HSS': np.nan, 'ACCURACY': np.nan,
+            'OBS_RATE': np.nan, 'FC_RATE': np.nan,
+            'HITS': 0, 'FALSE_ALARMS': 0, 'MISSES': 0, 'CORRECT_NEGATIVES': 0
+        }
+    
+    def calculate_verification_scores(self, observed, forecast):
+        """Calculer les scores de vérification avec gestion robuste des données"""
+        # S'assurer que les données sont numériques
+        observed = pd.to_numeric(observed, errors='coerce')
+        forecast = pd.to_numeric(forecast, errors='coerce')
+        
+        # Supprimer les NaN
+        mask = ~(np.isnan(observed) | np.isnan(forecast))
+        observed = observed[mask]
+        forecast = forecast[mask]
+        
+        if len(observed) == 0:
+            print("  Aucune donnée valide après nettoyage des NaN")
+            return self._create_empty_scores()
+        
+        # Conversion en booléen pour FLS présent/absent
+        obs_bool = (observed > 0).astype(int)
+        fc_bool = (forecast > 0).astype(int)
+        
+        print(f"  Observations valides: {len(observed)}")
+        print(f"  FLS observé: {obs_bool.sum()} / {len(obs_bool)}")
+        print(f"  FLS prévu: {fc_bool.sum()} / {len(fc_bool)}")
+        
+        # Table de contingence
+        a = ((fc_bool == 1) & (obs_bool == 1)).sum()  # Hits
+        b = ((fc_bool == 1) & (obs_bool == 0)).sum()  # False alarms
+        c = ((fc_bool == 0) & (obs_bool == 1)).sum()  # Misses
+        d = ((fc_bool == 0) & (obs_bool == 0)).sum()  # Correct negatives
+        
+        print(f"  Table de contingence: Hits={a}, False Alarms={b}, Misses={c}, Correct Negatives={d}")
+        
+        # Calcul des scores
+        scores = {}
+        
+        # POD (Probability Of Detection)
+        if (a + c) > 0:
+            scores['POD'] = a / (a + c)
+        else:
+            scores['POD'] = np.nan
+            
+        # FAR (False Alarm Ratio)
+        if (a + b) > 0:
+            scores['FAR'] = b / (a + b)
+        else:
+            scores['FAR'] = np.nan
+            
+        # FBIAS (Frequency Bias)
+        if (a + c) > 0:
+            scores['FBIAS'] = (a + b) / (a + c)
+        else:
+            scores['FBIAS'] = np.nan
+            
+        # POFD (Probability Of False Detection)
+        if (b + d) > 0:
+            scores['POFD'] = b / (b + d)
+        else:
+            scores['POFD'] = np.nan
+            
+        # TS (Threat Score)
+        if (a + b + c) > 0:
+            scores['TS'] = a / (a + b + c)
+        else:
+            scores['TS'] = np.nan
+            
+        # HSS (Heidke Skill Score)
+        denominator = ((a+c)*(c+d) + (a+b)*(b+d))
+        if denominator > 0:
+            scores['HSS'] = 2*(a*d - b*c) / denominator
+        else:
+            scores['HSS'] = np.nan
+            
+        # Accuracy
+        if (a + b + c + d) > 0:
+            scores['ACCURACY'] = (a + d) / (a + b + c + d)
+        else:
+            scores['ACCURACY'] = np.nan
+            
+        # Base rates
+        total = a + b + c + d
+        if total > 0:
+            scores['OBS_RATE'] = (a + c) / total
+            scores['FC_RATE'] = (a + b) / total
+        else:
+            scores['OBS_RATE'] = np.nan
+            scores['FC_RATE'] = np.nan
+        
+        # Comptes
+        scores['HITS'] = a
+        scores['FALSE_ALARMS'] = b
+        scores['MISSES'] = c
+        scores['CORRECT_NEGATIVES'] = d
+        
+        print(f"  Scores calculés: POD={scores.get('POD', 'NaN'):.3f}, FAR={scores.get('FAR', 'NaN'):.3f}, FBIAS={scores.get('FBIAS', 'NaN'):.3f}")
+        
+        return scores
+    
+    def clean_dataframe(self, df):
+        """Nettoyer le dataframe des valeurs problématiques"""
+        # Convertir toutes les colonnes numériques potentielles
+        for col in df.columns:
+            if col != 'datetime' and df[col].dtype == 'object':
+                try:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    pass
+        return df
+    
+    def process_station_month(self, station_name, satellite_df, station_files, fog_type='cf'):
+        """Traiter les données pour une station et un mois spécifique"""
+        print(f"\n=== Traitement de la station: {station_name} ({fog_type}) ===")
+        
+        all_monthly_results = []
+        all_station_data = []  # Pour accumuler toutes les données fusionnées
+        
+        # Traiter chaque fichier station (chaque mois)
+        for station_file in station_files:
+            station_name_from_file, month, file_fog_type = self.parse_station_filename(station_file.name)
+            
+            # Vérifier que le type correspond
+            if file_fog_type != fog_type:
+                continue
+                
+            print(f"  Traitement du mois {month:02d}/2024")
+            
+            # Charger les données station pour ce mois
+            stat_df = self.load_station_data(station_file, fog_type)
+            if stat_df is None:
+                continue
+            
+            # Filtrer les données satellite pour le même mois
+            sat_month_df = satellite_df[satellite_df['month'] == month].copy()
+            if sat_month_df.empty:
+                print(f"    Aucune donnée satellite pour le mois {month}")
+                continue
+            
+            # Fusionner les données sur datetime
+            merged_df = pd.merge(
+                sat_month_df, 
+                stat_df[['datetime', 'fls_stat']],  # Utiliser fls_stat au lieu de fls
+                on='datetime', 
+                how='inner',
+                suffixes=('_sat', '_stat')
+            )
+            
+            # NOUVEAU: Supprimer les lignes avec des valeurs NaN après la fusion
+            initial_count = len(merged_df)
+            merged_df = merged_df.dropna(subset=['fls_sat', 'fls_stat'])
+            final_count = len(merged_df)
+            nan_count = initial_count - final_count
+            
+            if nan_count > 0:
+                print(f"    Supprimé {nan_count} lignes avec des valeurs NaN après fusion")
+            
+            if merged_df.empty:
+                print(f"    Aucune donnée commune valide pour le mois {month}")
+                continue
+            
+            print(f"    Données fusionnées: {len(merged_df)} observations communes")
+            print(f"    Colonnes après fusion: {merged_df.columns.tolist()}")
+            
+            # Vérifier les données fusionnées
+            print(f"    Exemple de données FLS satellite: {merged_df['fls_sat'].head().values}")
+            print(f"    Exemple de données FLS station: {merged_df['fls_stat'].head().values}")
+            
+            # Ajouter les données fusionnées à la liste pour sauvegarde annuelle
+            all_station_data.append(merged_df)
+            
+            # Calculer les scores pour ce mois
+            monthly_scores = self.calculate_verification_scores(
+                merged_df['fls_stat'], merged_df['fls_sat']
+            )
+            monthly_scores.update({
+                'station': station_name,
+                'period': 'mensuel',
+                'month': month,
+                'year': 2024,
+                'fog_type': fog_type,
+                'n_obs': len(merged_df)
+            })
+            all_monthly_results.append(monthly_scores)
+        
+        # Calculer les scores annuels si on a des données
+        if all_station_data:
+            # Combiner tous les mois pour calculer les scores annuels
+            annual_merged_df = pd.concat(all_station_data, ignore_index=True)
+            
+            # NOUVEAU: Sauvegarder les données de comparaison pour cette station
+            self.save_station_comparison_data(annual_merged_df, station_name, fog_type)
+            
+            annual_scores = self.calculate_verification_scores(
+                annual_merged_df['fls_stat'], annual_merged_df['fls_sat']
+            )
+            annual_scores.update({
+                'station': station_name,
+                'period': 'annuel',
+                'month': 'all',
+                'year': 2024,
+                'fog_type': fog_type,
+                'n_obs': len(annual_merged_df)
+            })
+            all_monthly_results.append(annual_scores)
+            
+            print(f"  ✓ Scores calculés pour {station_name} ({fog_type}) - {len(annual_merged_df)} observations annuelles")
+        else:
+            print(f"  ✗ Aucune donnée annuelle pour {station_name} ({fog_type})")
+        
+        return pd.DataFrame(all_monthly_results) if all_monthly_results else None
+
+# Le reste du code (FogHeatmapGenerator, FogVisualizer, main, run_complete_analysis) reste inchangé...
+# [Le reste des classes et fonctions reste identique au script précédent]
+
+
+
+class FogHeatmapGenerator:
+    """Classe pour générer les heatmaps des tables de contingence"""
+
+    def __init__(self):
+        self.station_data_path = STATION_DATA_PATH
+        self.heatmap_path = HEATMAP_PATH
+
+    def create_contingency_table(self, df, threshold=0.5):
+        """Créer la table de contingence à partir des données"""
+        # Binariser les données avec le seuil
+        df_binary = df.copy()
+        df_binary['fls_satellite_bin'] = (df_binary['fls_satellite'] >= threshold).astype(int)
+        df_binary['fls_station_bin'] = (df_binary['fls_station'] >= threshold).astype(int)
+
+        # Calculer la table de contingence
+        contingency_table = pd.crosstab(
+            df_binary['fls_satellite_bin'],
+            df_binary['fls_station_bin'],
+            rownames=['Satellite'],
+            colnames=['Station'],
+            margins=True
+        )
+
+        # Renommer les index et colonnes pour plus de clarté
+        contingency_table.index = ['Non (0)', 'Oui (1)', 'Total']
+        contingency_table.columns = ['Non (0)', 'Oui (1)', 'Total']
+
+        return contingency_table
+
+    def calculate_contingency_values(self, df, threshold=0.5):
+        """Calculer les valeurs de la table de contingence"""
+        # Binariser les données
+        df_binary = df.copy()
+        df_binary['fls_satellite_bin'] = (df_binary['fls_satellite'] >= threshold).astype(int)
+        df_binary['fls_station_bin'] = (df_binary['fls_station'] >= threshold).astype(int)
+
+        # Calculer les quatre cas
+        hits = ((df_binary['fls_satellite_bin'] == 1) & (df_binary['fls_station_bin'] == 1)).sum()
+        false_alarms = ((df_binary['fls_satellite_bin'] == 1) & (df_binary['fls_station_bin'] == 0)).sum()
+        misses = ((df_binary['fls_satellite_bin'] == 0) & (df_binary['fls_station_bin'] == 1)).sum()
+        correct_negatives = ((df_binary['fls_satellite_bin'] == 0) & (df_binary['fls_station_bin'] == 0)).sum()
+
+        total = len(df_binary)
+
+        return hits, false_alarms, misses, correct_negatives, total
+
+    def plot_contingency_heatmap(self, station_name, fog_type):
+        """Générer une heatmap pour une station spécifique"""
+        filename = f"{self.station_data_path}/{station_name}_{fog_type}_comparison.csv"
+
+        if not os.path.exists(filename):
+            print(f"  Fichier non trouvé: {filename}")
+            return
+
+        try:
+            # Charger les données
+            df = pd.read_csv(filename)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+
+            # Calculer les valeurs de contingence
+            hits, false_alarms, misses, correct_negatives, total = self.calculate_contingency_values(df)
+
+            # Créer la matrice pour la heatmap
+            contingency_matrix = np.array([
+                [correct_negatives, misses],
+                [false_alarms, hits]
+            ])
+
+            # Créer les labels pour la heatmap
+            labels = np.array([
+                [f"Correct Negative\n{correct_negatives}\n({correct_negatives/total*100:.1f}%)",
+                 f"Miss\n{misses}\n({misses/total*100:.1f}%)"],
+                [f"False Alarm\n{false_alarms}\n({false_alarms/total*100:.1f}%)",
+                 f"Hit\n{hits}\n({hits/total*100:.1f}%)"]
+            ])
+
+            # Créer la figure
+            fig, ax = plt.subplots(figsize=(10, 8))
+
+            # Créer la heatmap
+            sns.heatmap(contingency_matrix, annot=labels, fmt='',
+                       cmap='RdYlBu', cbar=True, square=True,
+                       linewidths=2, linecolor='white',
+                       annot_kws={'size': 12, 'weight': 'bold'},
+                       ax=ax)
+
+            # Configurer les axes
+            ax.set_xticklabels(['Station = Non', 'Station = Oui'], rotation=0, fontsize=12)
+            ax.set_yticklabels(['Satellite = Non', 'Satellite = Oui'], rotation=90, fontsize=12)
+
+            # Titre et labels
+            title = f'Table de Contingence - {station_name} ({fog_type.upper()})\n'
+            title += f'Total observations: {total} | Seuil: 0.5 | Méthode: 9 pixels'
+            ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+
+            # Ajouter les descriptions
+            descriptions = [
+                "Hit: Prévu = Oui, Observé = Oui (Prévu brouillard, brouillard observé)",
+                "False Alarm: Prévu = Oui, Observé = Non (Prévu brouillard, pas de brouillard)",
+                "Miss: Prévu = Non, Observé = Oui (Pas prévu brouillard, mais brouillard observé)",
+                "Correct Negative: Prévu = Non, Observé = Non (Pas prévu brouillard, pas de brouillard)"
+            ]
+
+            # Ajouter la légende
+            for i, desc in enumerate(descriptions):
+                ax.text(2.5, 0.3 + i*0.15, desc, transform=ax.transAxes,
+                       fontsize=10, verticalalignment='top')
+
+            # Calculer et afficher les scores
+            pod = hits / (hits + misses) if (hits + misses) > 0 else 0
+            far = false_alarms / (hits + false_alarms) if (hits + false_alarms) > 0 else 0
+            accuracy = (hits + correct_negatives) / total if total > 0 else 0
+
+            stats_text = f"Scores:\nPOD: {pod:.3f}\nFAR: {far:.3f}\nAccuracy: {accuracy:.3f}"
+            ax.text(2.5, 0.9, stats_text, transform=ax.transAxes,
+                   fontsize=11, bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray"))
+
+            plt.tight_layout()
+
+            # Sauvegarder la figure
+            output_filename = f"{self.heatmap_path}/contingency_heatmap_{station_name}_{fog_type}.png"
+            plt.savefig(output_filename, dpi=300, bbox_inches='tight')
+            plt.close()
+
+            print(f"  ✓ Heatmap générée: {output_filename}")
+
+        except Exception as e:
+            print(f"  ✗ Erreur génération heatmap pour {station_name}_{fog_type}: {e}")
+
+    def generate_all_heatmaps(self):
+        """Générer les heatmaps pour toutes les stations"""
+        print("\n=== GÉNÉRATION DES HEATMAPS ===")
+
+        # Lister tous les fichiers de comparaison
+        comparison_files = list(Path(self.station_data_path).glob('*_comparison.csv'))
+
+        if not comparison_files:
+            print("Aucun fichier de comparaison trouvé")
+            return
+
+        print(f"Nombre de fichiers de comparaison trouvés: {len(comparison_files)}")
+
+        for file_path in comparison_files:
+            # Extraire le nom de la station et le type de brouillard du nom de fichier
+            filename = file_path.stem  # Enlever l'extension
+            parts = filename.split('_')
+            station_name = parts[0]
+            fog_type = parts[1] if len(parts) > 1 else 'cf'
+
+            print(f"Génération heatmap pour: {station_name} ({fog_type})")
+            self.plot_contingency_heatmap(station_name, fog_type)
+
+        print(f"\nHeatmaps sauvegardées dans: {self.heatmap_path}")
+
+class FogVisualizer:
+    def __init__(self, results_df):
+        self.results_df = results_df
+        self.station_coords = self._get_station_coordinates()
+        # Charger le shapefile du Maroc
+        self.shapefile_path = "../data/maroc shape file/Morocco_ADM0_simplified.simplified(1).geojson"
+        try:
+            self.gdf = gpd.read_file(self.shapefile_path)
+            self.has_shapefile = True
+            print("Shapefile du Maroc chargé avec succès")
+        except Exception as e:
+            print(f"Shapefile du Maroc non trouvé: {e}")
+            print("Utilisation des frontières par défaut de Cartopy")
+            self.has_shapefile = False
+
+    def _get_station_coordinates(self):
+        """Définir les coordonnées exactes des stations"""
+        coords = {
+            'AGADIR-MASSIRA': (30.32248, -9.406004),
+            'AL-HOCEIMA': (35.17951, -3.840237),
+            'FES-SAIS': (33.930295, -4.973148),
+            'KENITRA': (34.3, -6.6),
+            'LAAYOUNE': (27.147795, -13.229644),
+            'MARRAKECH': (31.611017, -8.028572),
+            'MEKNES': (33.879122, -5.520616),
+            'NOUASSEUR': (33.366667, -7.583333),
+            'OUJDA': (34.783556, -1.93875),
+            'RABAT-SALE': (34.05, -6.75),
+            'SIDI-SLIMANE': (34.233333, -6.05),
+            'TANGER-AERO': (35.731667, -5.910278),
+            'TETOUAN': (35.57413995, -5.365255754)
+        }
+        return coords
+
+    def plot_enhanced_spatial_scores(self, score_type, period='annuel', fog_type='cf'):
+        """
+        Version améliorée des cartes spatiales avec style professionnel
+        - Pour le FBIAS, le score parfait est 1, étendre la légende jusqu'à 3
+        - Ajouter les valeurs de chaque score à côté de chaque bulle
+        - Figer les palettes de 0 à 1 pour le POD, FAR et TS
+        """
+        # Filtrer les données
+        data = self.results_df[
+            (self.results_df['period'] == period) &
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+
+        if data.empty:
+            print(f"Aucune donnée pour {period}, {fog_type}")
+            return
+
+        # Préparer les données pour la carte
+        stations_data = []
+        for station in data['station'].unique():
+            station_scores = data[data['station'] == station]
+            avg_score = station_scores[score_type].mean()
+
+            if station in self.station_coords:
+                lat, lon = self.station_coords[station]
+                stations_data.append({
+                    'station': station,
+                    'lat': lat,
+                    'lon': lon,
+                    'score': avg_score
+                })
+
+        if not stations_data:
+            print("Aucune coordonnée disponible pour les stations")
+            return
+
+        map_df = pd.DataFrame(stations_data)
+
+        # Définir les limites de couleur en fonction du type de score
+        if score_type in ['POD', 'FAR', 'TS', 'HSS', 'ACCURACY']:
+            vmin, vmax = 0, 1
+            # Créer une colormap personnalisée pour les scores standard
+            colors = [
+                (0.0, 'darkred'),
+                (0.3, 'red'),
+                (0.5, 'orange'),
+                (0.7, 'yellow'),
+                (0.9, 'lightgreen'),
+                (1.0, 'darkgreen')
+            ]
+            cmap_custom = LinearSegmentedColormap.from_list("custom_red_yellow_green",
+                                                           [c[1] for c in colors], N=256)
+        elif score_type == 'FBIAS':
+            # Pour FBIAS, le score parfait est 1, étendre jusqu'à 3
+            vmin, vmax = 0, 3
+            # Créer une colormap personnalisée pour FBIAS
+            colors = [
+                (0.0, 'darkblue'),
+                (0.33, 'blue'),
+                (0.66, 'lightblue'),
+                (1.0, 'lightgreen'),
+                (1.5/3, 'yellow'),
+                (2.0/3, 'orange'),
+                (1.0, 'red')
+            ]
+            cmap_custom = LinearSegmentedColormap.from_list("custom_blue_green_yellow_red",
+                                                           [c[1] for c in colors], N=256)
+        else:
+            vmin, vmax = None, None
+            cmap_custom = 'RdYlBu_r'
+
+        # Créer la carte avec Cartopy
+        fig = plt.figure(figsize=(16, 12))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+
+        # Définir l'étendue de la carte (Maroc étendu)
+        ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+
+        # Ajouter seulement le littoral (pas les frontières politiques de Cartopy)
+        ax.add_feature(cfeature.COASTLINE, linewidth=1.5, edgecolor='navy', zorder=1)
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.4, zorder=0)
+        ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.2, zorder=0)
+
+        # Ajouter le shapefile du Maroc si disponible - D'ABORD les frontières
+        if self.has_shapefile:
+            self.gdf.boundary.plot(ax=ax, edgecolor="black", linewidth=2,
+                                 transform=ccrs.PlateCarree(), zorder=1)
+
+        # Tracer les stations avec taille fixe - ENSUITE les cercles
+        scatter = ax.scatter(map_df['lon'], map_df['lat'],
+                           c=map_df['score'], cmap=cmap_custom,
+                           s=300, alpha=0.8, edgecolors='black', linewidth=2,
+                           transform=ccrs.PlateCarree(), vmin=vmin, vmax=vmax, zorder=2)
+
+        # AJOUT: Annoter chaque station avec la valeur du score
+        for idx, row in map_df.iterrows():
+            # Formater la valeur selon le type de score
+            if score_type == 'FBIAS':
+                value_text = f"{row['score']:.2f}"
+            else:
+                value_text = f"{row['score']:.3f}"
+
+            # Ajouter le texte à côté du point
+            ax.text(row['lon'] + 0.2, row['lat'] + 0.1, value_text,
+                   fontsize=9, fontweight='bold',
+                   bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8),
+                   transform=ccrs.PlateCarree(), zorder=3,
+                   horizontalalignment='left', verticalalignment='bottom')
+
+        # Ajouter la grille améliorée
+        gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False,
+                         alpha=0.4, linestyle='--', color='gray', zorder=1)
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.xlabel_style = {'size': 10, 'color': 'black'}
+        gl.ylabel_style = {'size': 10, 'color': 'black'}
+
+        # Colorbar améliorée
+        cbar = plt.colorbar(scatter, ax=ax, orientation='vertical',
+                           shrink=0.8, pad=0.03, aspect=20)
+        cbar.set_label(f'Score {score_type}', fontsize=12, fontweight='bold')
+        cbar.ax.tick_params(labelsize=10)
+
+        # Labels et titre améliorés
+        ax.set_xlabel('Longitude', fontsize=12, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Latitude', fontsize=12, fontweight='bold', labelpad=10)
+
+        # AJOUT: Mentionner l'utilisation de la méthode des 9 pixels
+        title = f'Distribution spatiale du {score_type}\n({period.upper()}, {fog_type.upper()}) - Méthode 9 pixels'
+        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
+
+        # Ajouter une note de bas de page
+        ax.text(0.02, 0.02,
+               f"Données: Stations météorologiques Maroc\nPériode: {period} 2024 | Méthode: 9 pixels satellite",
+               transform=ax.transAxes, fontsize=9,
+               bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.8),
+               zorder=3)
+
+        plt.tight_layout()
+
+        # Sauvegarder la figure
+        filename = f'{OUTPUT_PATH}/enhanced_spatial_{score_type}_{period}_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Carte spatiale améliorée sauvegardée: {filename}")
+        plt.show()
+
+    def plot_spatial_scores(self, score_type, period='annuel', fog_type='cf'):
+        """Visualisation spatiale des scores avec carte du Maroc"""
+        # Filtrer les données
+        data = self.results_df[
+            (self.results_df['period'] == period) &
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+
+        if data.empty:
+            print(f"Aucune donnée pour {period}, {fog_type}")
+            return
+
+        # Préparer les données pour la carte
+        stations_data = []
+        for station in data['station'].unique():
+            station_scores = data[data['station'] == station]
+            avg_score = station_scores[score_type].mean()
+
+            if station in self.station_coords:
+                lat, lon = self.station_coords[station]
+                stations_data.append({
+                    'station': station,
+                    'lat': lat,
+                    'lon': lon,
+                    'score': avg_score
+                })
+            else:
+                print(f"Coordonnées manquantes pour la station: {station}")
+
+        if not stations_data:
+            print("Aucune coordonnée disponible pour les stations")
+            return
+
+        map_df = pd.DataFrame(stations_data)
+
+        # Définir les limites de couleur
+        if score_type in ['POD', 'FAR', 'TS', 'HSS', 'ACCURACY']:
+            vmin, vmax = 0, 1
+        elif score_type == 'FBIAS':
+            vmin, vmax = 0, 3
+        else:
+            vmin, vmax = None, None
+
+        # Créer la carte avec Cartopy
+        fig = plt.figure(figsize=(14, 10))
+        ax = plt.axes(projection=ccrs.PlateCarree())
+
+        # Définir l'étendue de la carte (Maroc)
+        ax.set_extent([-20, -1, 20, 36], crs=ccrs.PlateCarree())
+
+        # Ajouter seulement le littoral (pas les frontières politiques de Cartopy)
+        ax.add_feature(cfeature.COASTLINE, linewidth=1.2, edgecolor='black')
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+
+        # Ajouter le shapefile du Maroc si disponible - D'ABORD les frontières
+        if self.has_shapefile:
+            self.gdf.boundary.plot(ax=ax, edgecolor="black", linewidth=1.5,
+                                 transform=ccrs.PlateCarree(), zorder=1)
+
+        # Tracer les stations - ENSUITE les cercles (zorder plus élevé)
+        scatter = ax.scatter(map_df['lon'], map_df['lat'],
+                           c=map_df['score'], cmap='RdYlBu_r',
+                           s=200, alpha=0.8, edgecolors='black', linewidth=1,
+                           transform=ccrs.PlateCarree(), vmin=vmin, vmax=vmax, zorder=2)
+
+        # AJOUT: Annoter chaque station avec la valeur du score
+        for idx, row in map_df.iterrows():
+            # Formater la valeur selon le type de score
+            if score_type == 'FBIAS':
+                value_text = f"{row['score']:.2f}"
+            else:
+                value_text = f"{row['score']:.3f}"
+
+            # Ajouter le texte à côté du point
+            ax.text(row['lon'] + 0.2, row['lat'] + 0.1, value_text,
+                   fontsize=8, fontweight='bold',
+                   bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8),
+                   transform=ccrs.PlateCarree(), zorder=3,
+                   horizontalalignment='left', verticalalignment='bottom')
+
+        # Ajouter la grille
+        gl = ax.gridlines(draw_labels=True, dms=True, x_inline=False, y_inline=False, alpha=0.3)
+        gl.top_labels = False
+        gl.right_labels = False
+
+        # Colorbar
+        cbar = plt.colorbar(scatter, ax=ax, orientation='vertical', shrink=0.8, pad=0.05)
+        cbar.set_label(f'Score {score_type}', fontsize=12)
+
+        # Labels et titre
+        ax.set_xlabel('Longitude', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Latitude', fontsize=12, fontweight='bold')
+
+        # AJOUT: Mentionner l'utilisation de la méthode des 9 pixels
+        title = f'Distribution spatiale du {score_type} ({period.upper()}, {fog_type.upper()}) - Méthode 9 pixels'
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+
+        plt.tight_layout()
+
+        # Sauvegarder la figure
+        filename = f'{OUTPUT_PATH}/spatial_{score_type}_{period}_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Carte spatiale sauvegardée: {filename}")
+        plt.show()
+
+    def plot_monthly_scores(self, station=None, score_type='POD', fog_type='cf'):
+        """Évolution mensuelle des scores"""
+        if station:
+            data = self.results_df[
+                (self.results_df['station'] == station) &
+                (self.results_df['period'] == 'mensuel') &
+                (self.results_df['fog_type'] == fog_type)
+            ].copy()
+            title = f'Évolution mensuelle du {score_type} - {station} ({fog_type.upper()})'
+            filename_suffix = f'_{station}'
+        else:
+            data = self.results_df[
+                (self.results_df['period'] == 'mensuel') &
+                (self.results_df['fog_type'] == fog_type)
+            ].copy()
+            # Moyenne par mois sur toutes les stations
+            data = data.groupby('month', as_index=False).agg({
+                'POD': 'mean',
+                'FAR': 'mean',
+                'FBIAS': 'mean',
+                'TS': 'mean',
+                'HSS': 'mean',
+                'n_obs': 'sum'
+            })
+            title = f'Évolution mensuelle du {score_type} - Moyenne toutes stations ({fog_type.upper()})'
+            filename_suffix = '_all_stations'
+
+        if data.empty:
+            print(f"Aucune donnée mensuelle pour {score_type}, {fog_type}")
+            return
+
+        plt.figure(figsize=(12, 7))
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+        plt.plot(data['month'], data[score_type], 'o-', linewidth=3,
+                markersize=8, markerfacecolor='white', markeredgewidth=2)
+
+        plt.xlabel('Mois', fontsize=12)
+        plt.ylabel(score_type, fontsize=12)
+        plt.title(title, fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
+        plt.xticks(range(1, 13), months, rotation=45)
+
+        # Ajuster les limites Y selon le type de score
+        if score_type in ['POD', 'FAR', 'TS', 'HSS']:
+            plt.ylim(0, 1)
+        elif score_type == 'FBIAS':
+            plt.ylim(0, max(3, data[score_type].max() * 1.1))  # Étendre jusqu'à 3 ou plus si nécessaire
+
+        # Ajouter des valeurs sur les points
+        for i, (month, score) in enumerate(zip(data['month'], data[score_type])):
+            plt.annotate(f'{score:.2f}', (month, score),
+                        xytext=(0, 10), textcoords='offset points',
+                        ha='center', fontsize=9)
+
+        plt.tight_layout()
+
+        # Sauvegarder la figure
+        filename = f'{OUTPUT_PATH}/monthly_{score_type}_{fog_type}{filename_suffix}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Graphique mensuel sauvegardé: {filename}")
+        plt.show()
+
+    def plot_score_comparison(self, fog_type='cf'):
+        """Comparaison des scores entre stations"""
+        annual_data = self.results_df[
+            (self.results_df['period'] == 'annuel') &
+            (self.results_df['fog_type'] == fog_type)
+        ].copy()
+
+        if annual_data.empty:
+            print(f"Aucune donnée annuelle pour {fog_type}")
+            return
+
+        # Sélectionner les scores principaux
+        scores_to_plot = ['POD', 'FAR', 'FBIAS', 'TS']
+
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        axes = axes.flatten()
+
+        for i, score in enumerate(scores_to_plot):
+            ax = axes[i]
+            station_data = annual_data[['station', score]].dropna()
+            station_data = station_data.sort_values(score)
+
+            bars = ax.barh(station_data['station'], station_data[score],
+                          color=plt.cm.viridis(np.linspace(0, 1, len(station_data))))
+
+            ax.set_xlabel(score)
+            ax.set_title(f'{score} par Station ({fog_type.upper()})')
+            ax.grid(True, alpha=0.3, axis='x')
+
+            # Ajuster les limites X selon le type de score
+            if score in ['POD', 'FAR', 'TS']:
+                ax.set_xlim(0, 1)
+            elif score == 'FBIAS':
+                ax.set_xlim(0, max(3, station_data[score].max() * 1.1))
+
+            # Ajouter les valeurs sur les barres
+            for bar in bars:
+                width = bar.get_width()
+                ax.text(width + 0.01, bar.get_y() + bar.get_height()/2,
+                       f'{width:.2f}', ha='left', va='center', fontsize=9)
+
+        plt.tight_layout()
+        filename = f'{OUTPUT_PATH}/score_comparison_{fog_type}.png'
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Comparaison des scores sauvegardée: {filename}")
+        plt.show()
+
+    def create_summary_tables(self):
+        """Créer des tableaux récapitulatifs"""
+        print("\nCréation des tableaux récapitulatifs...")
+
+        # Tableau annuel par station
+        annual_data = self.results_df[self.results_df['period'] == 'annuel']
+
+        summary_annual = annual_data.groupby(['station', 'fog_type']).agg({
+            'POD': 'mean',
+            'FAR': 'mean',
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'ACCURACY': 'mean',
+            'n_obs': 'sum',
+            'HITS': 'sum',
+            'FALSE_ALARMS': 'sum',
+            'MISSES': 'sum'
+        }).round(3)
+
+        # Tableau mensuel moyen
+        monthly_data = self.results_df[self.results_df['period'] == 'mensuel']
+        summary_monthly = monthly_data.groupby(['month', 'fog_type']).agg({
+            'POD': 'mean',
+            'FAR': 'mean',
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'n_obs': 'sum'
+        }).round(3)
+
+        # Résumé global
+        global_summary = annual_data.groupby('fog_type').agg({
+            'POD': 'mean',
+            'FAR': 'mean',
+            'FBIAS': 'mean',
+            'TS': 'mean',
+            'HSS': 'mean',
+            'n_obs': 'sum'
+        }).round(3)
+
+        # Sauvegarder les tableaux
+        summary_annual.to_csv(f'{OUTPUT_PATH}/tableau_recap_annuel.csv')
+        summary_monthly.to_csv(f'{OUTPUT_PATH}/tableau_recap_mensuel.csv')
+        global_summary.to_csv(f'{OUTPUT_PATH}/tableau_recap_global.csv')
+
+        print("Tableaux récapitulatifs créés avec succès!")
+
+        # Afficher le résumé global
+        print("\n=== RÉSUMÉ GLOBAL ===")
+        print(global_summary)
+
+        return summary_annual, summary_monthly, global_summary
+
+def main():
+    """Fonction principale"""
+    print("=== DÉBUT DE L'ANALYSE FLS (9 PIXELS) ===")
+
+    # Créer le processeur
+    processor = FogDataProcessor()
+
+    # Lister les fichiers
+    satellite_files = list(Path(SATELLITE_PATH).glob('*fls_RGB.csv'))
+    station_files = list(Path(STATION_PATH).glob('*fls_600*.xlsx'))
+
+    print(f"Fichiers satellite trouvés: {len(satellite_files)}")
+    print(f"Fichiers station trouvés: {len(station_files)}")
+
+    # AFFICHER LES FICHIERS TROUVÉS (DEBUG)
+    print("\n=== FICHIERS SATELLITE TROUVÉS ===")
+    for sat_file in satellite_files:
+        sat_name = processor.parse_satellite_station_name(sat_file.name)
+        print(f"  {sat_file.name} -> '{sat_name}'")
+
+    print("\n=== FICHIERS STATION TROUVÉS ===")
+    for stat_file in station_files:
+        station_name, month, fog_type = processor.parse_station_filename(stat_file.name)
+        print(f"  {stat_file.name} -> '{station_name}', mois {month}, type {fog_type}")
+
+    all_results = []
+
+    # Traiter seulement les stations qui ont des données dans donnesfls
+    stations_to_process = []
+
+    # Identifier les stations disponibles dans donnesfls
+    for station_file in station_files:
+        station_name, month, fog_type = processor.parse_station_filename(station_file.name)
+        if station_name and station_name not in stations_to_process:
+            stations_to_process.append(station_name)
+
+    print(f"\nStations à traiter ({len(stations_to_process)}): {stations_to_process}")
+
+    # Pour chaque station dans donnesfls, trouver le fichier satellite correspondant
+    for station_donnesfls in stations_to_process:
+        print(f"\n=== Traitement de la station: {station_donnesfls} ===")
+
+        # Trouver le nom correspondant dans flsparrgb
+        satellite_station_name = None
+        for sat_name, donnesfls_name in processor.station_mapping.items():
+            if donnesfls_name == station_donnesfls:
+                satellite_station_name = sat_name
+                break
+
+        if not satellite_station_name:
+            print(f"  Aucune correspondance trouvée dans les fichiers satellite pour {station_donnesfls}")
+            continue
+
+        # Trouver le fichier satellite
+        satellite_file = None
+        for sat_file in satellite_files:
+            sat_station_from_file = processor.parse_satellite_station_name(sat_file.name)
+            if sat_station_from_file == satellite_station_name:
+                satellite_file = sat_file
+                break
+
+        if not satellite_file:
+            print(f"  Fichier satellite non trouvé pour {satellite_station_name}")
+            continue
+
+        print(f"  Fichier satellite trouvé: {satellite_file.name}")
+
+        # Charger les données satellite une fois pour toute la station
+        satellite_df = processor.load_satellite_data(satellite_file)
+        if satellite_df is None:
+            continue
+
+        # Trouver tous les fichiers station pour cette station
+        station_files_for_station = [
+            f for f in station_files
+            if station_donnesfls in f.name
+        ]
+
+        print(f"  Fichiers station trouvés: {len(station_files_for_station)}")
+
+        # Traiter pour chaque type de contrainte
+        for fog_type in ['cf', 'hc']:
+            results = processor.process_station_month(
+                station_donnesfls, satellite_df, station_files_for_station, fog_type
+            )
+
+            if results is not None and not results.empty:
+                all_results.append(results)
+                print(f"  ✓ Scores calculés pour {station_donnesfls} ({fog_type})")
+            else:
+                print(f"  ✗ Échec du calcul des scores pour {station_donnesfls} ({fog_type})")
+
+    # Combiner tous les résultats
+    if all_results:
+        final_results = pd.concat(all_results, ignore_index=True)
+
+        # Sauvegarder les résultats complets
+        final_results.to_csv(f'{OUTPUT_PATH}/scores_fls_complet.csv', index=False)
+
+        print(f"\n=== ANALYSE TERMINÉE AVEC SUCCÈS ===")
+        print(f"Stations traitées: {final_results['station'].nunique()}")
+        print(f"Types de brouillard analysés: {final_results['fog_type'].unique().tolist()}")
+        print(f"Nombre total de scores calculés: {len(final_results)}")
+        print(f"Fichier de résultats: {OUTPUT_PATH}/scores_fls_complet.csv")
+
+        return final_results
+    else:
+        print("\n=== AUCUN RÉSULTAT GÉNÉRÉ ===")
+        return None
+
+# Fonction pour exécuter l'analyse complète
+def run_complete_analysis():
+    """Exécuter l'analyse complète avec visualisations"""
+
+    # Étape 1: Traitement des données
+    print("ÉTAPE 1: Traitement des données")
+    results_df = main()
+
+    if results_df is None:
+        print("Arrêt de l'analyse: aucune donnée traitée")
+        return
+
+    # Étape 2: Visualisations
+    print("\nÉTAPE 2: Création des visualisations")
+    visualizer = FogVisualizer(results_df)
+
+    # Scores à visualiser
+    scores_to_plot = ['POD', 'FAR', 'FBIAS', 'TS', 'HSS']
+
+    # Cartes spatiales normales
+    print("\nCréation des cartes spatiales normales...")
+    for score in scores_to_plot:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_spatial_scores(score, period='annuel', fog_type=fog_type)
+
+    # Cartes spatiales améliorées
+    print("\nCréation des cartes spatiales améliorées...")
+    for score in scores_to_plot:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_enhanced_spatial_scores(score, period='annuel', fog_type=fog_type)
+
+    # Graphiques mensuels
+    print("\nCréation des graphiques mensuels...")
+    for score in ['POD', 'FAR', 'TS']:
+        for fog_type in results_df['fog_type'].unique():
+            visualizer.plot_monthly_scores(score_type=score, fog_type=fog_type)
+
+    # Comparaison des stations
+    print("\nCréation des comparaisons entre stations...")
+    for fog_type in results_df['fog_type'].unique():
+        visualizer.plot_score_comparison(fog_type=fog_type)
+
+    # Étape 3: Tableaux récapitulatifs
+    print("\nÉTAPE 3: Génération des tableaux récapitulatifs")
+    annual_table, monthly_table, global_table = visualizer.create_summary_tables()
+
+    # Étape 4: Génération des heatmaps
+    print("\nÉTAPE 4: Génération des heatmaps de contingence")
+    heatmap_generator = FogHeatmapGenerator()
+    heatmap_generator.generate_all_heatmaps()
+
+    # Étape 5: Rapport final
+    print("\n" + "="*50)
+    print("RAPPORT FINAL - MÉTHODE 9 PIXELS")
+    print("="*50)
+
+    stations = results_df['station'].unique()
+    fog_types = results_df['fog_type'].unique()
+
+    print(f"\nStations analysées ({len(stations)}):")
+    for station in sorted(stations):
+        print(f"  - {station}")
+
+    print(f"\nTypes de brouillard analysés: {', '.join(fog_types)}")
+
+    # Statistiques globales
+    for fog_type in fog_types:
+        fog_data = results_df[results_df['fog_type'] == fog_type]
+        annual_data = fog_data[fog_data['period'] == 'annuel']
+
+        if not annual_data.empty:
+            print(f"\nPerformance moyenne ({fog_type.upper()}):")
+            print(f"  POD:    {annual_data['POD'].mean():.3f}")
+            print(f"  FAR:    {annual_data['FAR'].mean():.3f}")
+            print(f"  FBIAS:  {annual_data['FBIAS'].mean():.3f}")
+            print(f"  TS:     {annual_data['TS'].mean():.3f}")
+            print(f"  HSS:    {annual_data['HSS'].mean():.3f}")
+
+    print(f"\nFichiers générés dans: {OUTPUT_PATH}")
+    print("✓ scores_fls_complet.csv - Tous les scores détaillés")
+    print("✓ tableau_recap_annuel.csv - Résumé annuel par station")
+    print("✓ tableau_recap_mensuel.csv - Résumé mensuel")
+    print("✓ tableau_recap_global.csv - Résumé global")
+    print("✓ spatial_*.png - Cartes de distribution spatiale normales")
+    print("✓ enhanced_spatial_*.png - Cartes de distribution spatiale améliorées")
+    print("✓ monthly_*.png - Graphiques d'évolution mensuelle")
+    print("✓ score_comparison_*.png - Comparaisons entre stations")
+
+    # NOUVEAU: Afficher les fichiers de données de station générés
+    print(f"\nFichiers de données de station générés dans: {STATION_DATA_PATH}")
+    station_data_files = list(Path(STATION_DATA_PATH).glob('*_comparison.csv'))
+    print(f"✓ {len(station_data_files)} fichiers de données de comparaison station-satellite")
+
+    # NOUVEAU: Afficher les heatmaps générées
+    print(f"\nHeatmaps générées dans: {HEATMAP_PATH}")
+    heatmap_files = list(Path(HEATMAP_PATH).glob('*_heatmap_*.png'))
+    print(f"✓ {len(heatmap_files)} heatmaps de tables de contingence")
+
+    # AJOUT: Confirmation de l'utilisation de la méthode des 9 pixels
+    print(f"\nNOTE IMPORTANTE:")
+    print(f"Toutes les analyses utilisent la méthode des 9 pixels satellites")
+    print(f"Les fichiers source se trouvent dans: {SATELLITE_PATH}")
+
+# Exécution du script
+if __name__ == "__main__":
+    run_complete_analysis()
