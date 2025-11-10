@@ -1,0 +1,469 @@
+# -*- coding: utf-8 -*-
+"""
+Script pour combiner les données satellite (nearst et 9pixel) et station (hc et cf) 
+en un seul fichier par station avec les valeurs originales (-9999 et NaN)
+"""
+import pandas as pd
+import numpy as np
+import os
+from pathlib import Path
+import re
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+# Configuration des chemins
+SATELLITE_NEARST_PATH = "../data/closest_lat_lon/"
+SATELLITE_9PIXEL_PATH = "../data/9pixel-RGB/"
+STATION_PATH = "../data/reanalysedesoccurrenceshorairesduflspour2024/"
+OUTPUT_COMBINED_PATH = "../results/combined_data_all_methods/"
+
+# Créer le dossier de résultats s'il n'existe pas
+os.makedirs(OUTPUT_COMBINED_PATH, exist_ok=True)
+
+class DataCombiner:
+    def __init__(self):
+        self.station_mapping = self._create_station_mapping()
+        
+    def _create_station_mapping(self):
+        """Créer un mapping entre les noms de stations des deux dossiers"""
+        mapping = {
+            'AGADIR-AL-MASSIRA': 'AGADIR-MASSIRA',
+            'AL-HOUCEIMA': 'AL-HOCEIMA', 
+            'FES-SAISS': 'FES-SAIS',
+            'KENITRA': 'KENITRA',
+            'LAAYOUNE': 'LAAYOUNE',
+            'MARRAKECH': 'MARRAKECH',
+            'MEKNES': 'MEKNES',
+            'NOUASSEUR': 'NOUASSEUR',
+            'OUJDA': 'OUJDA',
+            'RABAT-SALE': 'RABAT-SALE',
+            'SIDI-SLIMANE': 'SIDI-SLIMANE',
+            'TANGER-AERO': 'TANGER-AERO',
+            'TETOUAN': 'TETOUAN'
+        }
+        print("Mapping des stations créé:")
+        for key, value in mapping.items():
+            print(f"  '{key}' -> '{value}'")
+        return mapping
+    
+    def parse_satellite_station_name(self, filename):
+        """Extraire le nom de la station du fichier satellite"""
+        name = filename.replace('-fls_RGB.csv', '').replace('.csv', '').strip()
+        return name
+    
+    def parse_station_filename(self, filename):
+        """Extraire le nom de la station et le mois du fichier station"""
+        filename_str = str(filename)
+        
+        possible_stations = [
+            'AGADIR-MASSIRA', 'AL-HOCEIMA', 'FES-SAIS', 'KENITRA', 
+            'LAAYOUNE', 'MARRAKECH', 'MEKNES', 'NOUASSEUR', 
+            'OUJDA', 'RABAT-SALE', 'SIDI-SLIMANE', 'TANGER-AERO', 'TETOUAN'
+        ]
+        
+        # Trouver la station dans le nom de fichier
+        station_name = None
+        for station in possible_stations:
+            if station in filename_str:
+                station_name = station
+                break
+        
+        if not station_name:
+            print(f"  Station non reconnue dans: {filename_str}")
+            return None, None, None
+        
+        # Extraire le mois
+        month_match = re.search(r'-(\d{1,2})2024', filename_str)
+        if not month_match:
+            print(f"  Mois non trouvé dans: {filename_str}")
+            return None, None, None
+        
+        month = int(month_match.group(1))
+        
+        # Déterminer le type de brouillard
+        if '600cf' in filename_str.lower():
+            fog_type = 'cf'
+        elif '600hc' in filename_str.lower():
+            fog_type = 'hc'
+        else:
+            print(f"  Type de brouillard non reconnu dans: {filename_str}")
+            return None, None, None
+        
+        return station_name, month, fog_type
+    
+    def load_satellite_data_original(self, file_path, method_name):
+        """Charger les données satellite avec les valeurs NaN originales"""
+        try:
+            print(f"  Chargement des données satellite ({method_name}): {file_path.name}")
+            df = pd.read_csv(file_path)
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            
+            # Chercher la colonne FLS
+            fls_col = None
+            for col in df.columns:
+                if 'fls' in col.lower():
+                    fls_col = col
+                    break
+            
+            if fls_col is None:
+                print("  Aucune colonne FLS trouvée, utilisation de la première colonne numérique")
+                numeric_cols = df.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    fls_col = numeric_cols[0]
+                else:
+                    print("  Aucune colonne numérique trouvée")
+                    return None
+            
+            # CORRECTION : Convertir en numérique pour éviter les problèmes de type
+            df[f'fls_satellite_{method_name}'] = pd.to_numeric(df[fls_col], errors='coerce')
+            
+            print(f"    Colonne FLS satellite: {fls_col}")
+            print(f"    Valeurs uniques: {df[f'fls_satellite_{method_name}'].unique()[:10]}")
+            print(f"    Nombre de NaN: {df[f'fls_satellite_{method_name}'].isna().sum()}")
+            print(f"    Données chargées: {len(df)} lignes")
+            
+            return df[['datetime', f'fls_satellite_{method_name}']]
+        except Exception as e:
+            print(f"  Erreur chargement satellite {file_path}: {e}")
+            return None
+    
+    def load_station_data_original(self, file_path, fog_type):
+        """Charger les données station avec les valeurs -9999 et NaN originales"""
+        try:
+            print(f"  Chargement des données station: {file_path.name}")
+            df = pd.read_excel(file_path)
+            
+            # Standardiser les noms de colonnes
+            df.columns = [col.lower().strip() for col in df.columns]
+            
+            # Vérifier les colonnes requises
+            required_cols = ['jour', 'hour']
+            if not all(col in df.columns for col in required_cols):
+                print(f"  Colonnes manquantes dans {file_path.name}. Colonnes disponibles: {df.columns.tolist()}")
+                return None
+            
+            # Trouver la colonne FLS
+            fls_col = None
+            for col in df.columns:
+                if 'fls' in col.lower():
+                    fls_col = col
+                    break
+            
+            if fls_col is None:
+                print(f"  Aucune colonne FLS trouvée dans {file_path.name}")
+                return None
+            
+            # Convertir la date et l'heure
+            df['datetime'] = pd.to_datetime(df['jour'].astype(str) + 
+                                          df['hour'].astype(str).str.zfill(2), 
+                                          format='%Y%m%d%H')
+            
+            # Garder les valeurs originales (y compris -9999 et NaN)
+            df[f'fls_station_{fog_type}'] = df[fls_col]
+            
+            # Convertir en numérique sans remplacer les valeurs problématiques
+            df[f'fls_station_{fog_type}'] = pd.to_numeric(df[f'fls_station_{fog_type}'], errors='coerce')
+            
+            print(f"    Colonne FLS station ({fog_type}): {fls_col}")
+            print(f"    Valeurs uniques: {df[f'fls_station_{fog_type}'].unique()[:10]}")
+            print(f"    Nombre de NaN: {df[f'fls_station_{fog_type}'].isna().sum()}")
+            print(f"    Nombre de -9999: {(df[f'fls_station_{fog_type}'] == -9999).sum()}")
+            print(f"    Données chargées: {len(df)} lignes")
+            
+            return df[['datetime', f'fls_station_{fog_type}']]
+        except Exception as e:
+            print(f"  Erreur chargement station {file_path}: {e}")
+            return None
+    
+    def find_satellite_file(self, station_name, satellite_path):
+        """Trouver le fichier satellite correspondant à une station"""
+        satellite_station_name = None
+        for sat_name, donnesfls_name in self.station_mapping.items():
+            if donnesfls_name == station_name:
+                satellite_station_name = sat_name
+                break
+        
+        if not satellite_station_name:
+            print(f"    Aucune correspondance trouvée pour {station_name}")
+            return None
+        
+        # Trouver le fichier satellite
+        satellite_files = list(Path(satellite_path).glob('*fls_RGB.csv'))
+        for sat_file in satellite_files:
+            sat_station_from_file = self.parse_satellite_station_name(sat_file.name)
+            if sat_station_from_file == satellite_station_name:
+                return sat_file
+        
+        print(f"    Fichier satellite non trouvé pour {satellite_station_name}")
+        return None
+    
+    def combine_station_data(self, station_name):
+        """Combiner toutes les données pour une station (nearst, 9pixel, hc, cf)"""
+        print(f"\n=== Combinaison des données pour la station: {station_name} ===")
+        
+        # Charger les données satellite - méthode nearest
+        print("  Chargement des données satellite - méthode nearest...")
+        nearst_file = self.find_satellite_file(station_name, SATELLITE_NEARST_PATH)
+        if nearst_file:
+            nearst_df = self.load_satellite_data_original(nearst_file, 'nearst')
+        else:
+            nearst_df = None
+            print("  ⚠️ Aucune donnée satellite nearest trouvée")
+        
+        # Charger les données satellite - méthode 9pixel
+        print("  Chargement des données satellite - méthode 9pixel...")
+        pixel9_file = self.find_satellite_file(station_name, SATELLITE_9PIXEL_PATH)
+        if pixel9_file:
+            pixel9_df = self.load_satellite_data_original(pixel9_file, '9pixel')
+        else:
+            pixel9_df = None
+            print("  ⚠️ Aucune donnée satellite 9pixel trouvée")
+        
+        # Trouver tous les fichiers station pour cette station
+        station_files = list(Path(STATION_PATH).glob('*fls_600*.xlsx'))
+        station_files_for_station = [f for f in station_files if station_name in f.name]
+        
+        print(f"  Fichiers station trouvés: {len(station_files_for_station)}")
+        
+        # Séparer les fichiers par type (hc et cf)
+        hc_files = []
+        cf_files = []
+        
+        for station_file in station_files_for_station:
+            station_name_from_file, month, file_fog_type = self.parse_station_filename(station_file.name)
+            if file_fog_type == 'hc':
+                hc_files.append(station_file)
+            elif file_fog_type == 'cf':
+                cf_files.append(station_file)
+        
+        print(f"  Fichiers HC: {len(hc_files)}, Fichiers CF: {len(cf_files)}")
+        
+        # Charger et combiner les données HC
+        hc_dataframes = []
+        for hc_file in hc_files:
+            hc_df = self.load_station_data_original(hc_file, 'hc')
+            if hc_df is not None:
+                hc_dataframes.append(hc_df)
+        
+        if hc_dataframes:
+            combined_hc = pd.concat(hc_dataframes, ignore_index=True)
+            # Supprimer les doublons basés sur datetime
+            combined_hc = combined_hc.drop_duplicates(subset=['datetime'])
+            print(f"  Données HC combinées: {len(combined_hc)} observations")
+        else:
+            combined_hc = pd.DataFrame(columns=['datetime', 'fls_station_hc'])
+            print(f"  ⚠️ Aucune donnée HC valide pour {station_name}")
+        
+        # Charger et combiner les données CF
+        cf_dataframes = []
+        for cf_file in cf_files:
+            cf_df = self.load_station_data_original(cf_file, 'cf')
+            if cf_df is not None:
+                cf_dataframes.append(cf_df)
+        
+        if cf_dataframes:
+            combined_cf = pd.concat(cf_dataframes, ignore_index=True)
+            # Supprimer les doublons basés sur datetime
+            combined_cf = combined_cf.drop_duplicates(subset=['datetime'])
+            print(f"  Données CF combinées: {len(combined_cf)} observations")
+        else:
+            combined_cf = pd.DataFrame(columns=['datetime', 'fls_station_cf'])
+            print(f"  ⚠️ Aucune donnée CF valide pour {station_name}")
+        
+        # Fusionner toutes les données
+        combined_data = None
+        
+        # Commencer par les données satellite nearest si disponibles
+        if nearst_df is not None:
+            combined_data = nearst_df.copy()
+        elif pixel9_df is not None:
+            combined_data = pixel9_df.copy()
+        else:
+            # Si aucune donnée satellite, créer un DataFrame vide avec datetime
+            combined_data = pd.DataFrame(columns=['datetime'])
+        
+        # Fusionner avec les données satellite 9pixel
+        if pixel9_df is not None:
+            if combined_data.empty:
+                combined_data = pixel9_df.copy()
+            else:
+                combined_data = pd.merge(combined_data, pixel9_df, on='datetime', how='outer')
+        else:
+            combined_data['fls_satellite_9pixel'] = np.nan
+        
+        # Fusionner avec HC
+        if not combined_hc.empty:
+            combined_data = pd.merge(combined_data, combined_hc, on='datetime', how='outer')
+        else:
+            combined_data['fls_station_hc'] = np.nan
+        
+        # Fusionner avec CF
+        if not combined_cf.empty:
+            combined_data = pd.merge(combined_data, combined_cf, on='datetime', how='outer')
+        else:
+            combined_data['fls_station_cf'] = np.nan
+        
+        # Trier par datetime
+        combined_data = combined_data.sort_values('datetime').reset_index(drop=True)
+        
+        # Statistiques finales
+        print(f"\n  === STATISTIQUES FINALES POUR {station_name} ===")
+        print(f"  Période: {combined_data['datetime'].min()} à {combined_data['datetime'].max()}")
+        print(f"  Nombre total d'observations: {len(combined_data)}")
+        
+        if 'fls_satellite_nearst' in combined_data.columns:
+            nearst_nan = combined_data['fls_satellite_nearst'].isna().sum()
+            print(f"  Satellite Nearest - Total: {len(combined_data)}, NaN: {nearst_nan}")
+        
+        if 'fls_satellite_9pixel' in combined_data.columns:
+            pixel9_nan = combined_data['fls_satellite_9pixel'].isna().sum()
+            print(f"  Satellite 9pixel - Total: {len(combined_data)}, NaN: {pixel9_nan}")
+        
+        if 'fls_station_hc' in combined_data.columns:
+            hc_nan = combined_data['fls_station_hc'].isna().sum()
+            hc_9999 = (combined_data['fls_station_hc'] == -9999).sum()
+            print(f"  Station HC - Total: {len(combined_data)}, NaN: {hc_nan}, -9999: {hc_9999}")
+        
+        if 'fls_station_cf' in combined_data.columns:
+            cf_nan = combined_data['fls_station_cf'].isna().sum()
+            cf_9999 = (combined_data['fls_station_cf'] == -9999).sum()
+            print(f"  Station CF - Total: {len(combined_data)}, NaN: {cf_nan}, -9999: {cf_9999}")
+        
+        return combined_data
+    
+    def save_combined_data(self, combined_df, station_name):
+        """Sauvegarder les données combinées"""
+        if combined_df is None or combined_df.empty:
+            print(f"  Aucune donnée à sauvegarder pour {station_name}")
+            return
+        
+        filename = f"{OUTPUT_COMBINED_PATH}/{station_name}_combined_all_methods.csv"
+        combined_df.to_csv(filename, index=False)
+        print(f"  ✓ Données combinées sauvegardées: {filename}")
+        
+        # Sauvegarder aussi un fichier avec statistiques détaillées
+        stats_filename = f"{OUTPUT_COMBINED_PATH}/{station_name}_data_statistics.txt"
+        with open(stats_filename, 'w') as f:
+            f.write(f"Statistiques des données combinées - {station_name}\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Période: {combined_df['datetime'].min()} à {combined_df['datetime'].max()}\n")
+            f.write(f"Nombre total d'observations: {len(combined_df)}\n\n")
+            
+            # Statistiques satellite nearest
+            if 'fls_satellite_nearst' in combined_df.columns:
+                f.write("SATELLITE DATA - NEAREST PIXEL:\n")
+                f.write(f"  Observations totales: {len(combined_df)}\n")
+                f.write(f"  Valeurs NaN: {combined_df['fls_satellite_nearst'].isna().sum()}\n")
+                valid_nearst = combined_df['fls_satellite_nearst'].dropna()
+                if len(valid_nearst) > 0:
+                    f.write(f"  Valeurs valides: {len(valid_nearst)}\n")
+                    # CORRECTION : Conversion sécurisée en float
+                    try:
+                        min_val = float(valid_nearst.min())
+                        max_val = float(valid_nearst.max())
+                        mean_val = float(valid_nearst.mean())
+                        median_val = float(valid_nearst.median())
+                        f.write(f"  Valeur min: {min_val:.3f}\n")
+                        f.write(f"  Valeur max: {max_val:.3f}\n")
+                        f.write(f"  Valeur moyenne: {mean_val:.3f}\n")
+                        f.write(f"  Valeur médiane: {median_val:.3f}\n")
+                    except (ValueError, TypeError) as e:
+                        f.write(f"  Erreur de calcul des statistiques: {e}\n")
+                        f.write(f"  Type des données: {type(valid_nearst.iloc[0])}\n")
+                f.write("\n")
+            
+            # Statistiques satellite 9pixel
+            if 'fls_satellite_9pixel' in combined_df.columns:
+                f.write("SATELLITE DATA - 9 PIXEL METHOD:\n")
+                f.write(f"  Observations totales: {len(combined_df)}\n")
+                f.write(f"  Valeurs NaN: {combined_df['fls_satellite_9pixel'].isna().sum()}\n")
+                valid_9pixel = combined_df['fls_satellite_9pixel'].dropna()
+                if len(valid_9pixel) > 0:
+                    f.write(f"  Valeurs valides: {len(valid_9pixel)}\n")
+                    # CORRECTION : Conversion sécurisée en float
+                    try:
+                        min_val = float(valid_9pixel.min())
+                        max_val = float(valid_9pixel.max())
+                        mean_val = float(valid_9pixel.mean())
+                        median_val = float(valid_9pixel.median())
+                        f.write(f"  Valeur min: {min_val:.3f}\n")
+                        f.write(f"  Valeur max: {max_val:.3f}\n")
+                        f.write(f"  Valeur moyenne: {mean_val:.3f}\n")
+                        f.write(f"  Valeur médiane: {median_val:.3f}\n")
+                    except (ValueError, TypeError) as e:
+                        f.write(f"  Erreur de calcul des statistiques: {e}\n")
+                        f.write(f"  Type des données: {type(valid_9pixel.iloc[0])}\n")
+                f.write("\n")
+            
+            # Statistiques station HC
+            if 'fls_station_hc' in combined_df.columns:
+                f.write("STATION DATA - HC (High Constraint):\n")
+                f.write(f"  Observations totales: {len(combined_df)}\n")
+                f.write(f"  Valeurs NaN: {combined_df['fls_station_hc'].isna().sum()}\n")
+                f.write(f"  Valeurs -9999: {(combined_df['fls_station_hc'] == -9999).sum()}\n")
+                valid_hc = combined_df['fls_station_hc'][(combined_df['fls_station_hc'] != -9999) & (~combined_df['fls_station_hc'].isna())]
+                if len(valid_hc) > 0:
+                    f.write(f"  Valeurs valides (0 ou 1): {len(valid_hc)}\n")
+                    f.write(f"  FLS présents (1): {(valid_hc == 1).sum()} ({((valid_hc == 1).sum()/len(valid_hc)*100):.1f}%)\n")
+                    f.write(f"  FLS absents (0): {(valid_hc == 0).sum()} ({((valid_hc == 0).sum()/len(valid_hc)*100):.1f}%)\n")
+                f.write("\n")
+            
+            # Statistiques station CF
+            if 'fls_station_cf' in combined_df.columns:
+                f.write("STATION DATA - CF (Confidence Factor):\n")
+                f.write(f"  Observations totales: {len(combined_df)}\n")
+                f.write(f"  Valeurs NaN: {combined_df['fls_station_cf'].isna().sum()}\n")
+                f.write(f"  Valeurs -9999: {(combined_df['fls_station_cf'] == -9999).sum()}\n")
+                valid_cf = combined_df['fls_station_cf'][(combined_df['fls_station_cf'] != -9999) & (~combined_df['fls_station_cf'].isna())]
+                if len(valid_cf) > 0:
+                    f.write(f"  Valeurs valides (0 ou 1): {len(valid_cf)}\n")
+                    f.write(f"  FLS présents (1): {(valid_cf == 1).sum()} ({((valid_cf == 1).sum()/len(valid_cf)*100):.1f}%)\n")
+                    f.write(f"  FLS absents (0): {(valid_cf == 0).sum()} ({((valid_cf == 0).sum()/len(valid_cf)*100):.1f}%)\n")
+        
+        print(f"  ✓ Statistiques détaillées sauvegardées: {stats_filename}")
+    
+    def combine_all_stations(self):
+        """Combiner les données pour toutes les stations"""
+        print("=== DÉBUT DE LA COMBINAISON DES DONNÉES POUR TOUTES LES STATIONS ===")
+        print(f"Chemin nearest: {SATELLITE_NEARST_PATH}")
+        print(f"Chemin 9pixel: {SATELLITE_9PIXEL_PATH}")
+        print(f"Chemin station: {STATION_PATH}")
+        
+        # Identifier les stations disponibles
+        station_files = list(Path(STATION_PATH).glob('*fls_600*.xlsx'))
+        stations_to_process = []
+        
+        for station_file in station_files:
+            station_name, month, fog_type = self.parse_station_filename(station_file.name)
+            if station_name and station_name not in stations_to_process:
+                stations_to_process.append(station_name)
+        
+        print(f"\nStations à traiter ({len(stations_to_process)}): {stations_to_process}")
+        
+        # Traiter chaque station
+        for station in stations_to_process:
+            combined_data = self.combine_station_data(station)
+            self.save_combined_data(combined_data, station)
+        
+        print(f"\n=== COMBINAISON TERMINÉE ===")
+        print(f"Fichiers générés dans: {OUTPUT_COMBINED_PATH}")
+        
+        # Lister les fichiers générés
+        combined_files = list(Path(OUTPUT_COMBINED_PATH).glob('*_combined_all_methods.csv'))
+        stats_files = list(Path(OUTPUT_COMBINED_PATH).glob('*_statistics.txt'))
+        
+        print(f"Fichiers de données combinées créés: {len(combined_files)}")
+        print(f"Fichiers de statistiques créés: {len(stats_files)}")
+        
+        for file in combined_files:
+            file_size = file.stat().st_size / 1024  # Taille en KB
+            print(f"  - {file.name} ({file_size:.1f} KB)")
+
+def main():
+    """Fonction principale"""
+    combiner = DataCombiner()
+    combiner.combine_all_stations()
+
+if __name__ == "__main__":
+    main()
