@@ -22,7 +22,7 @@ def calculate_night_rgb(nc_file):
         date_time = nc.getncattr("date_time")
         date_time_clean = date_time.replace("/", "")
     except KeyError as e:
-        print(f"⚠️ Variable manquante dans {nc_file}: {e}")
+        print(f" Variable manquante dans {nc_file}: {e}")
         nc.close()
         return None, None, None, None, None, None
         
@@ -92,14 +92,14 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
     """
     
     # 1. Calculer les composants RGB
-    print(f"📊 Calcul des composants RGB depuis: {nc_file}")
+    print(f" Calcul des composants RGB depuis: {nc_file}")
     red, green, blue, latitudes, longitudes, date_time = calculate_night_rgb(nc_file)
     
     if red is None:
-        print("❌ Erreur lors du calcul des composants RGB")
+        print(" Erreur lors du calcul des composants RGB")
         return None
     
-    print(f"✅ Données calculées pour: {date_time}")
+    print(f" Données calculées pour: {date_time}")
     print(f"   Forme des données: {red.shape}")
     print(f"   Latitude: {latitudes.min():.2f} à {latitudes.max():.2f}")
     print(f"   Longitude: {longitudes.min():.2f} à {longitudes.max():.2f}")
@@ -108,7 +108,7 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
     print(f"   Valeurs Blue: {np.nanmin(blue):.2f} à {np.nanmax(blue):.2f}")
     
     # 2. Créer le masque FLS binaire
-    print("\n🎭 Création du masque FLS binaire...")
+    print("\n Création du masque FLS binaire...")
     print(f"   Seuils: Green ∈ [{threshold_green[0]}, {threshold_green[1]}]")
     print(f"           Red ∈ [{threshold_red[0]}, {threshold_red[1]}]")
     print(f"           Blue ∈ [{threshold_blue[0]}, {threshold_blue[1]}]")
@@ -137,7 +137,7 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
     fls_pixels = np.sum(fls_binary)
     fls_percentage = (fls_pixels / total_pixels) * 100
     
-    print(f"\n📈 Statistiques du masque FLS:")
+    print(f"\n Statistiques du masque FLS:")
     print(f"   Pixels totaux: {total_pixels}")
     print(f"   Pixels valides (non-NaN): {np.sum(valid_pixels)}")
     print(f"   Pixels FLS: {fls_pixels} ({fls_percentage:.2f}%)")
@@ -160,7 +160,7 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
             domain_extent = [np.nanmin(longitudes), np.nanmax(longitudes),
                             np.nanmin(latitudes), np.nanmax(latitudes)]
     else:
-        print("⚠️ Coordonnées non valides, utilisation d'une étendue par défaut")
+        print(" Coordonnées non valides, utilisation d'une étendue par défaut")
         domain_extent = [-15, 0, 20, 40]  # Maroc par défaut
     
     # 3a. Plot RGB Nighttime Microphysics (optionnel)
@@ -252,7 +252,7 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
     # Sauvegarder l'image
     output_file = os.path.join(output_dir, f"fls_mask_{date_time}.png")
     plt.savefig(output_file, dpi=300, bbox_inches='tight', facecolor='white')
-    print(f"\n✅ Image sauvegardée: {output_file}")
+    print(f"\n Image sauvegardée: {output_file}")
     
     # Sauvegarder le masque binaire en format numpy (comme array régulier)
     mask_file = os.path.join(output_dir, f"fls_mask_{date_time}.npy")
@@ -260,7 +260,7 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
     # Convertir en array numpy régulier avant de sauvegarder
     fls_binary_regular = np.asarray(fls_binary)
     np.save(mask_file, fls_binary_regular)
-    print(f"✅ Masque binaire sauvegardé: {mask_file}")
+    print(f" Masque binaire sauvegardé: {mask_file}")
     
     # Sauvegarder les statistiques
     stats_file = os.path.join(output_dir, f"fls_stats_{date_time}.txt")
@@ -281,10 +281,10 @@ def create_and_plot_fls_mask(nc_file, output_dir="output",
         f.write(f"  Red: min={np.nanmin(red):.2f}, max={np.nanmax(red):.2f}\n")
         f.write(f"  Blue: min={np.nanmin(blue):.2f}, max={np.nanmax(blue):.2f}\n")
     
-    print(f"✅ Statistiques sauvegardées: {stats_file}")
+    print(f" Statistiques sauvegardées: {stats_file}")
     
     # 5. Afficher un aperçu supplémentaire des valeurs
-    print("\n📋 Aperçu des valeurs seuils vs données réelles:")
+    print("\n Aperçu des valeurs seuils vs données réelles:")
     print(f"   Green - Seuils: [{threshold_green[0]}, {threshold_green[1]}]")
     print(f"           Données: {np.nanpercentile(green, [5, 50, 95]):.1f} (5%, 50%, 95%)")
     
@@ -321,7 +321,7 @@ def plot_simple_binary_mask(nc_file, output_dir="output_simple"):
     """
     Version simplifiée pour afficher uniquement le masque binaire.
     """
-    print(f"🎭 Création du masque FLS binaire simple...")
+    print(f" Création du masque FLS binaire simple...")
     
     # Calculer les composants RGB
     red, green, blue, latitudes, longitudes, date_time = calculate_night_rgb(nc_file)
@@ -395,7 +395,7 @@ def plot_simple_binary_mask(nc_file, output_dir="output_simple"):
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, f"binary_mask_{date_time}.png")
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"✅ Masque binaire sauvegardé: {output_file}")
+    print(f" Masque binaire sauvegardé: {output_file}")
     
     plt.show()
     
