@@ -1,12 +1,3 @@
-Aucun élément sélectionné
-
-Passer au contenu
-Utiliser Gmail avec un lecteur d'écran
-Conversations
-89 % de 15 Go utilisés
-Conditions · Confidentialité · Règlements du programme
-Dernière activité sur le compte : il y a 12 minutes
-Détails
 import os
 import numpy as np
 import pandas as pd
